@@ -1,0 +1,73 @@
+{
+  "name": "@open-mercato/voice-channels",
+  "version": "0.4.10",
+  "description": "Voice Channels Hub + AI Call Copilot UI (hackathon MVP)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node watch.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": [
+        "./src/*.ts",
+        "./src/*.tsx"
+      ],
+      "default": "./dist/*.js"
+    },
+    "./*.json": "./src/*.json",
+    "./*/*": {
+      "types": [
+        "./src/*/*.ts",
+        "./src/*/*.tsx"
+      ],
+      "default": "./dist/*/*.js"
+    },
+    "./*/*.json": "./src/*/*.json",
+    "./*/*/*": {
+      "types": [
+        "./src/*/*/*.ts",
+        "./src/*/*/*.tsx"
+      ],
+      "default": "./dist/*/*/*.js"
+    },
+    "./*/*/*.json": "./src/*/*/*.json",
+    "./*/*/*/*": {
+      "types": [
+        "./src/*/*/*/*.ts",
+        "./src/*/*/*/*.tsx"
+      ],
+      "default": "./dist/*/*/*/*.js"
+    },
+    "./*/*/*/*.json": "./src/*/*/*/*.json",
+    "./*/*/*/*/*": {
+      "types": [
+        "./src/*/*/*/*/*.ts",
+        "./src/*/*/*/*/*.tsx"
+      ],
+      "default": "./dist/*/*/*/*/*.js"
+    },
+    "./*/*/*/*/*.json": "./src/*/*/*/*/*.json",
+    "./*/*/*/*/*/*.json": "./src/*/*/*/*/*/*.json"
+  },
+  "peerDependencies": {
+    "@open-mercato/shared": "workspace:*",
+    "@open-mercato/ui": "workspace:*",
+    "react": ">=19.0.0"
+  },
+  "devDependencies": {
+    "@open-mercato/shared": "workspace:*",
+    "@open-mercato/ui": "workspace:*",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
