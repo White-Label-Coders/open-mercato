@@ -33,20 +33,13 @@ function renderCard(card: SuggestionCard, segments: TranscriptSegment[], onDismi
 
 export function SuggestionStack({ suggestions, segments, onDismiss }: SuggestionStackProps) {
   const t = useT()
+
+  const pinnedQuickActions = suggestions.filter((suggestion) => suggestion.type === 'quick_action')
+  const regularSuggestions = suggestions.filter((suggestion) => suggestion.type !== 'quick_action')
+
   if (suggestions.length === 0) {
     return (
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#94a3b8',
-          fontSize: '15px',
-          padding: '20px',
-          textAlign: 'center',
-        }}
-      >
+      <div className="flex flex-1 items-center justify-center p-5 text-center text-[15px] text-slate-400">
         {t(
           'voice_channels.copilot.suggestions.empty',
           'AI Copilot is listening and will suggest relevant products, pricing, and actions...',
@@ -56,15 +49,18 @@ export function SuggestionStack({ suggestions, segments, onDismiss }: Suggestion
   }
 
   return (
-    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px' }}>
-      {suggestions.map((suggestion) => (
-        <div
-          key={suggestion.id}
-          style={{
-            marginBottom: '12px',
-            animation: 'slideIn 0.4s ease-out',
-          }}
-        >
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
+      {pinnedQuickActions.length > 0 ? (
+        <div className="sticky top-0 z-10 -mx-4 mb-3 bg-muted/30 px-4 pb-3 pt-0 backdrop-blur-sm">
+          {pinnedQuickActions.map((suggestion) => (
+            <div key={suggestion.id} className="animate-[slideIn_0.4s_ease-out]">
+              {renderCard(suggestion, segments, onDismiss)}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {regularSuggestions.map((suggestion) => (
+        <div key={suggestion.id} className="mb-3 animate-[slideIn_0.4s_ease-out] last:mb-0">
           {renderCard(suggestion, segments, onDismiss)}
         </div>
       ))}
