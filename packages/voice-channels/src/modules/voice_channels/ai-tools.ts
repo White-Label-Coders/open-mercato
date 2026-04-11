@@ -1,249 +1,267 @@
-import { z } from 'zod'
-import type { EntityManager } from '@mikro-orm/core'
-import type { AiToolDefinition } from '@open-mercato/ai-assistant'
-import { selectBestPrice, type PriceRow } from '@open-mercato/core/modules/catalog/lib/pricing'
+import { z } from "zod";
+import type { EntityManager } from "@mikro-orm/core";
+import type { AiToolDefinition } from "@open-mercato/ai-assistant";
+import {
+  selectBestPrice,
+  type PriceRow,
+} from "@open-mercato/core/modules/catalog/lib/pricing";
 import {
   CatalogOffer,
   CatalogProduct,
   CatalogProductPrice,
-} from '@open-mercato/core/modules/catalog/data/entities'
+} from "@open-mercato/core/modules/catalog/data/entities";
 import {
   CustomerActivity,
   CustomerComment,
   CustomerDealPersonLink,
   CustomerEntity,
-} from '@open-mercato/core/modules/customers/data/entities'
-import { SalesOrder } from '@open-mercato/core/modules/sales/data/entities'
+} from "@open-mercato/core/modules/customers/data/entities";
+import { SalesOrder } from "@open-mercato/core/modules/sales/data/entities";
 import type {
   CopilotCustomerContextResult,
   CopilotOpenDealsResult,
   CopilotPricingCheckResult,
   CopilotProductSearchResult,
-} from './types'
+} from "./types";
 
 type ProductSearchInput = {
-  keywords: string[]
-  customerId?: string
-  limit?: number
-  context?: string
-}
+  keywords: string[];
+  customerId?: string;
+  limit?: number;
+  context?: string;
+};
 
 type CustomerContextInput = {
-  customerId: string
-}
+  customerId: string;
+};
 
 type PricingCheckInput = {
-  productId?: string
-  customerId?: string
-  context?: string
-}
+  productId?: string;
+  customerId?: string;
+  context?: string;
+};
 
 type OpenDealsInput = {
-  customerId: string
-}
+  customerId: string;
+};
 
 function requireScope(ctx: {
-  tenantId: string | null
-  organizationId: string | null
-  container: { resolve: <T = unknown>(name: string) => T }
+  tenantId: string | null;
+  organizationId: string | null;
+  container: { resolve: <T = unknown>(name: string) => T };
 }): { em: EntityManager; tenantId: string; organizationId: string } {
   if (!ctx.tenantId || !ctx.organizationId) {
-    throw new Error('Tenant and organization context are required')
+    throw new Error("Tenant and organization context are required");
   }
 
-  const em = ctx.container.resolve<EntityManager>('em').fork()
-  return { em, tenantId: ctx.tenantId, organizationId: ctx.organizationId }
+  const em = ctx.container.resolve<EntityManager>("em").fork();
+  return { em, tenantId: ctx.tenantId, organizationId: ctx.organizationId };
 }
 
 function normalizeMoney(value: string | number | null | undefined): number {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? Math.round(value * 100) / 100 : 0
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
   }
-  if (typeof value !== 'string') {
-    return 0
+  if (typeof value !== "string") {
+    return 0;
   }
 
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
 }
 
 function readProductCategory(product: CatalogProduct): string {
-  const metadata = isRecord(product.metadata) ? product.metadata : null
+  const metadata = isRecord(product.metadata) ? product.metadata : null;
   const category =
     readString(metadata?.categoryName) ??
     readString(metadata?.category) ??
     readString(product.subtitle) ??
-    'Uncategorized'
+    "Uncategorized";
 
-  return category
+  return category;
 }
 
 function readProductStock(product: CatalogProduct): number {
-  const metadata = isRecord(product.metadata) ? product.metadata : null
-  const rawStock = metadata?.stockQuantity
+  const metadata = isRecord(product.metadata) ? product.metadata : null;
+  const rawStock = metadata?.stockQuantity;
 
-  if (typeof rawStock === 'number' && Number.isFinite(rawStock)) {
-    return rawStock
+  if (typeof rawStock === "number" && Number.isFinite(rawStock)) {
+    return rawStock;
   }
 
-  if (typeof rawStock === 'string') {
-    const parsed = Number(rawStock)
+  if (typeof rawStock === "string") {
+    const parsed = Number(rawStock);
     if (Number.isFinite(parsed)) {
-      return parsed
+      return parsed;
     }
   }
 
-  return 0
+  return 0;
 }
 
 function readString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
+  return typeof value === "object" && value !== null;
 }
 
 function normalizeSearchText(value: string): string {
   return value
-    .toLocaleLowerCase('pl-PL')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
+    .toLocaleLowerCase("pl-PL")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function tokenizeSearchText(value: string): string[] {
   return normalizeSearchText(value)
     .split(/\s+/)
-    .filter((token) => token.length >= 2)
+    .filter((token) => token.length >= 2);
 }
 
 const SEARCH_STEM_SUFFIXES = [
-  'owych',
-  'owego',
-  'owej',
-  'owym',
-  'owymi',
-  'ami',
-  'ach',
-  'ego',
-  'owa',
-  'owe',
-  'owy',
-  'ych',
-  'cie',
-  'cia',
-  'cji',
-  'cja',
-  'ow',
-  'ów',
-  'om',
-  'ie',
-  'y',
-  'i',
-  'e',
-  'a',
-] as const
+  "owych",
+  "owego",
+  "owej",
+  "owym",
+  "owymi",
+  "ami",
+  "ach",
+  "ego",
+  "owa",
+  "owe",
+  "owy",
+  "ych",
+  "cie",
+  "cia",
+  "cji",
+  "cja",
+  "ow",
+  "ów",
+  "om",
+  "ie",
+  "y",
+  "i",
+  "e",
+  "a",
+] as const;
 
 const SEARCH_SYNONYM_GROUPS = [
-  ['rura', 'rury', 'rur', 'pipe', 'pipes'],
-  ['stal', 'stalowa', 'stalowe', 'stalowych', 'steel'],
-  ['zawor', 'zawory', 'zaworow', 'valve', 'valves'],
-  ['kulowy', 'kulowych', 'ball'],
-  ['ksztaltka', 'ksztaltki', 'ksztaltek', 'fitting', 'fittings'],
-] as const
+  ["rura", "rury", "rur", "pipe", "pipes"],
+  ["stal", "stalowa", "stalowe", "stalowych", "steel"],
+  ["zawor", "zawory", "zaworow", "valve", "valves"],
+  ["kulowy", "kulowych", "ball"],
+  ["ksztaltka", "ksztaltki", "ksztaltek", "fitting", "fittings"],
+] as const;
 
 function collectSearchTermVariants(term: string): string[] {
-  const variants = new Set<string>()
+  const variants = new Set<string>();
   if (term.length < 2) {
-    return []
+    return [];
   }
 
-  variants.add(term)
+  variants.add(term);
 
   for (const suffix of SEARCH_STEM_SUFFIXES) {
     if (term.length > suffix.length + 2 && term.endsWith(suffix)) {
-      variants.add(term.slice(0, -suffix.length))
+      variants.add(term.slice(0, -suffix.length));
     }
   }
 
   for (const group of SEARCH_SYNONYM_GROUPS) {
     if (group.some((candidate) => term.includes(candidate))) {
       for (const candidate of group) {
-        variants.add(candidate)
+        variants.add(candidate);
       }
     }
   }
 
-  return Array.from(variants).filter((variant) => variant.length >= 2)
+  return Array.from(variants).filter((variant) => variant.length >= 2);
 }
 
-function buildProductSearchTerms(keywords: string[], context?: string): string[] {
-  const terms = new Set<string>()
-  const sources = [...keywords, context ?? '']
+function buildProductSearchTerms(
+  keywords: string[],
+  context?: string
+): string[] {
+  const terms = new Set<string>();
+  const sources = [...keywords, context ?? ""];
 
   for (const source of sources) {
     for (const token of tokenizeSearchText(source)) {
       for (const variant of collectSearchTermVariants(token)) {
-        terms.add(variant)
+        terms.add(variant);
       }
     }
   }
 
   if (context) {
-    const dnMatches = context.match(/dn\s*\d+/gi) ?? []
-    const pnMatches = context.match(/pn\s*\d+/gi) ?? []
+    const dnMatches = context.match(/dn\s*\d+/gi) ?? [];
+    const pnMatches = context.match(/pn\s*\d+/gi) ?? [];
 
     for (const match of [...dnMatches, ...pnMatches]) {
-      terms.add(match.replace(/\s+/g, '').toLocaleLowerCase('pl-PL'))
+      terms.add(match.replace(/\s+/g, "").toLocaleLowerCase("pl-PL"));
     }
   }
 
-  return Array.from(terms)
+  return Array.from(terms);
 }
 
-function scoreProductMatch(product: CatalogProduct, searchTerms: string[]): number {
+function scoreProductMatch(
+  product: CatalogProduct,
+  searchTerms: string[]
+): number {
   if (!searchTerms.length) {
-    return 0
+    return 0;
   }
 
-  const title = normalizeSearchText(product.title)
-  const sku = normalizeSearchText(readString(product.sku) ?? '')
-  const description = normalizeSearchText(readString(product.description) ?? '')
-  const category = normalizeSearchText(readProductCategory(product))
-  const haystack = `${title} ${sku} ${description} ${category}`.trim()
+  const title = normalizeSearchText(product.title);
+  const sku = normalizeSearchText(readString(product.sku) ?? "");
+  const description = normalizeSearchText(
+    readString(product.description) ?? ""
+  );
+  const category = normalizeSearchText(readProductCategory(product));
+  const haystack = `${title} ${sku} ${description} ${category}`.trim();
 
-  let score = 0
+  let score = 0;
 
   for (const term of searchTerms) {
     if (!haystack.includes(term)) {
-      continue
+      continue;
     }
 
-    score += term.startsWith('dn') || term.startsWith('pn') ? 6 : term.length >= 5 ? 3 : 1
+    score +=
+      term.startsWith("dn") || term.startsWith("pn")
+        ? 6
+        : term.length >= 5
+          ? 3
+          : 1;
 
     if (title.includes(term)) {
-      score += 2
+      score += 2;
     }
     if (sku.includes(term)) {
-      score += 2
+      score += 2;
     }
     if (category.includes(term)) {
-      score += 1
+      score += 1;
     }
   }
 
-  return score
+  return score;
 }
 
 function rankProductsForContext(
   products: CatalogProduct[],
   keywords: string[],
   context: string | undefined,
-  limit: number,
+  limit: number
 ): CatalogProduct[] {
-  const searchTerms = buildProductSearchTerms(keywords, context)
+  const searchTerms = buildProductSearchTerms(keywords, context);
 
   return products
     .map((product) => ({
@@ -254,80 +272,90 @@ function rankProductsForContext(
     .filter(({ score }) => score > 0)
     .sort((left, right) => {
       if (right.score !== left.score) {
-        return right.score - left.score
+        return right.score - left.score;
       }
       if (right.stockQuantity !== left.stockQuantity) {
-        return right.stockQuantity - left.stockQuantity
+        return right.stockQuantity - left.stockQuantity;
       }
-      return left.product.title.localeCompare(right.product.title, 'pl')
+      return left.product.title.localeCompare(right.product.title, "pl");
     })
     .slice(0, limit)
-    .map(({ product }) => product)
+    .map(({ product }) => product);
 }
 
 function pickBestPrice(
   priceRows: CatalogProductPrice[],
   customerId?: string
 ): { amount: number; currency: string; priceType: string } {
-  const rows = priceRows as PriceRow[]
+  const rows = priceRows as PriceRow[];
   const best = selectBestPrice(rows, {
     customerId: customerId ?? null,
     quantity: 1,
     date: new Date(),
-  })
+  });
 
   if (!best) {
-    return { amount: 0, currency: 'PLN', priceType: 'standard' }
+    return { amount: 0, currency: "PLN", priceType: "standard" };
   }
 
   return {
     amount: normalizeMoney(best.unitPriceGross ?? best.unitPriceNet),
-    currency: readString(best.currencyCode) ?? 'PLN',
-    priceType: readString(best.kind) ?? 'standard',
-  }
+    currency: readString(best.currencyCode) ?? "PLN",
+    priceType: readString(best.kind) ?? "standard",
+  };
 }
 
 function isBaselinePriceRow(row: CatalogProductPrice): boolean {
-  const offer = row.offer
-  const priceKind = row.priceKind
+  const offer = row.offer;
+  const priceKind = row.priceKind;
   const priceKindIsPromotion =
-    typeof priceKind === 'object' && priceKind !== null && 'isPromotion' in priceKind
+    typeof priceKind === "object" &&
+    priceKind !== null &&
+    "isPromotion" in priceKind
       ? Boolean(priceKind.isPromotion)
-      : false
+      : false;
 
   if (offer) {
-    return false
+    return false;
   }
-  if (row.customerId || row.customerGroupId || row.userId || row.userGroupId || row.channelId) {
-    return false
+  if (
+    row.customerId ||
+    row.customerGroupId ||
+    row.userId ||
+    row.userGroupId ||
+    row.channelId
+  ) {
+    return false;
   }
   if (priceKindIsPromotion) {
-    return false
+    return false;
   }
-  return row.kind === 'regular' || row.kind === 'standard' || row.kind === ''
+  return row.kind === "regular" || row.kind === "standard" || row.kind === "";
 }
 
 function extractTopCategories(orders: SalesOrder[]): string[] {
-  const counts = new Map<string, number>()
+  const counts = new Map<string, number>();
 
   for (const order of orders) {
     for (const line of order.lines.getItems()) {
-      const snapshot = isRecord(line.catalogSnapshot) ? line.catalogSnapshot : null
-      const metadata = isRecord(line.metadata) ? line.metadata : null
+      const snapshot = isRecord(line.catalogSnapshot)
+        ? line.catalogSnapshot
+        : null;
+      const metadata = isRecord(line.metadata) ? line.metadata : null;
       const category =
         readString(snapshot?.categoryName) ??
         readString(metadata?.categoryName) ??
-        readString(line.description?.split('|')[0]) ??
-        'Uncategorized'
+        readString(line.description?.split("|")[0]) ??
+        "Uncategorized";
 
-      counts.set(category, (counts.get(category) ?? 0) + 1)
+      counts.set(category, (counts.get(category) ?? 0) + 1);
     }
   }
 
   return Array.from(counts.entries())
     .sort((left, right) => right[1] - left[1])
     .slice(0, 3)
-    .map(([category]) => category)
+    .map(([category]) => category);
 }
 
 function buildPromotionSummary(
@@ -335,35 +363,48 @@ function buildPromotionSummary(
   priceRows: CatalogProductPrice[],
   offers: CatalogOffer[]
 ): Array<{ name: string; discount: string; validUntil: string }> {
-  const rowsByOfferId = new Map<string, CatalogProductPrice[]>()
+  const rowsByOfferId = new Map<string, CatalogProductPrice[]>();
 
   for (const row of priceRows) {
-    const offer = row.offer
-    if (!offer || typeof offer === 'string') {
-      continue
+    const offer = row.offer;
+    if (!offer || typeof offer === "string") {
+      continue;
     }
-    const current = rowsByOfferId.get(offer.id) ?? []
-    current.push(row)
-    rowsByOfferId.set(offer.id, current)
+    const current = rowsByOfferId.get(offer.id) ?? [];
+    current.push(row);
+    rowsByOfferId.set(offer.id, current);
   }
 
   return offers.map((offer) => {
-    const offerRows = rowsByOfferId.get(offer.id) ?? []
-    const bestOfferRow = offerRows.reduce<CatalogProductPrice | null>((best, row) => {
-      const currentValue = normalizeMoney(row.unitPriceGross ?? row.unitPriceNet)
-      if (!best) {
-        return row
-      }
-      const bestValue = normalizeMoney(best.unitPriceGross ?? best.unitPriceNet)
-      return currentValue < bestValue ? row : best
-    }, null)
+    const offerRows = rowsByOfferId.get(offer.id) ?? [];
+    const bestOfferRow = offerRows.reduce<CatalogProductPrice | null>(
+      (best, row) => {
+        const currentValue = normalizeMoney(
+          row.unitPriceGross ?? row.unitPriceNet
+        );
+        if (!best) {
+          return row;
+        }
+        const bestValue = normalizeMoney(
+          best.unitPriceGross ?? best.unitPriceNet
+        );
+        return currentValue < bestValue ? row : best;
+      },
+      null
+    );
 
     const offerPrice = bestOfferRow
       ? normalizeMoney(bestOfferRow.unitPriceGross ?? bestOfferRow.unitPriceNet)
-      : 0
-    const discountAmount = basePrice > 0 && offerPrice > 0 ? basePrice - offerPrice : 0
-    const discountPercent = basePrice > 0 && discountAmount > 0 ? (discountAmount / basePrice) * 100 : 0
-    const validUntil = bestOfferRow?.endsAt ? bestOfferRow.endsAt.toISOString().split('T')[0] : 'Bezterminowa'
+      : 0;
+    const discountAmount =
+      basePrice > 0 && offerPrice > 0 ? basePrice - offerPrice : 0;
+    const discountPercent =
+      basePrice > 0 && discountAmount > 0
+        ? (discountAmount / basePrice) * 100
+        : 0;
+    const validUntil = bestOfferRow?.endsAt
+      ? bestOfferRow.endsAt.toISOString().split("T")[0]
+      : "Bezterminowa";
 
     return {
       name: offer.title,
@@ -372,26 +413,48 @@ function buildPromotionSummary(
           ? `${Math.round(discountPercent * 10) / 10}%`
           : offerPrice > 0
             ? `${Math.round(offerPrice * 100) / 100} PLN`
-            : 'Oferta aktywna',
+            : "Oferta aktywna",
       validUntil,
-    }
-  })
+    };
+  });
 }
 
-const copilotSearchProducts: AiToolDefinition<ProductSearchInput, CopilotProductSearchResult> = {
-  name: 'copilot_search_products',
+const copilotSearchProducts: AiToolDefinition<
+  ProductSearchInput,
+  CopilotProductSearchResult
+> = {
+  name: "copilot_search_products",
   description: `Search the product catalog for items mentioned during a sales conversation.
 
 Returns matching products with scoped pricing, category, and stock metadata for the current organization.`,
   inputSchema: z.object({
-    keywords: z.array(z.string().min(1)).min(1).describe('Product-related keywords from the conversation'),
-    customerId: z.string().uuid().optional().describe('Customer entity ID used for customer-specific pricing'),
-    limit: z.number().int().min(1).max(10).optional().default(3).describe('Maximum number of products to return'),
-    context: z.string().optional().describe('Raw transcript fragment used to improve fuzzy product matching'),
+    keywords: z
+      .array(z.string().min(1))
+      .min(1)
+      .describe("Product-related keywords from the conversation"),
+    customerId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Customer entity ID used for customer-specific pricing"),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(10)
+      .optional()
+      .default(3)
+      .describe("Maximum number of products to return"),
+    context: z
+      .string()
+      .optional()
+      .describe(
+        "Raw transcript fragment used to improve fuzzy product matching"
+      ),
   }),
-  requiredFeatures: ['voice_channels.copilot.view'],
+  requiredFeatures: ["voice_channels.copilot.view"],
   handler: async (input, ctx) => {
-    const { em, organizationId, tenantId } = requireScope(ctx)
+    const { em, organizationId, tenantId } = requireScope(ctx);
     const activeProducts = await em.find(
       CatalogProduct,
       {
@@ -401,18 +464,18 @@ Returns matching products with scoped pricing, category, and stock metadata for 
         deletedAt: null,
       },
       {
-        orderBy: { title: 'ASC' },
+        orderBy: { title: "ASC" },
         limit: 250,
       }
-    )
+    );
     const products = rankProductsForContext(
       activeProducts,
       input.keywords,
       input.context,
-      input.limit ?? 3,
-    )
+      input.limit ?? 3
+    );
 
-    const productIds = products.map((product) => product.id)
+    const productIds = products.map((product) => product.id);
     const priceRows = productIds.length
       ? await em.find(
           CatalogProductPrice,
@@ -421,52 +484,61 @@ Returns matching products with scoped pricing, category, and stock metadata for 
             tenantId,
             product: { $in: productIds },
           },
-          { populate: ['offer', 'priceKind'] }
+          { populate: ["offer", "priceKind"] }
         )
-      : []
+      : [];
 
-    const rowsByProductId = new Map<string, CatalogProductPrice[]>()
+    const rowsByProductId = new Map<string, CatalogProductPrice[]>();
     for (const row of priceRows) {
-      const product = row.product
-      const productId = typeof product === 'string' ? product : product?.id
+      const product = row.product;
+      const productId = typeof product === "string" ? product : product?.id;
       if (!productId) {
-        continue
+        continue;
       }
-      const current = rowsByProductId.get(productId) ?? []
-      current.push(row)
-      rowsByProductId.set(productId, current)
+      const current = rowsByProductId.get(productId) ?? [];
+      current.push(row);
+      rowsByProductId.set(productId, current);
     }
 
     return {
       products: products.map((product) => {
-        const resolvedPrice = pickBestPrice(rowsByProductId.get(product.id) ?? [], input.customerId)
-        const stockQuantity = readProductStock(product)
+        const resolvedPrice = pickBestPrice(
+          rowsByProductId.get(product.id) ?? [],
+          input.customerId
+        );
+        const stockQuantity = readProductStock(product);
 
         return {
           id: product.id,
           name: product.title,
-          sku: readString(product.sku) ?? '',
+          sku: readString(product.sku) ?? "",
           price: resolvedPrice,
           available: stockQuantity > 0,
           stockQuantity,
           category: readProductCategory(product),
-        }
+        };
       }),
-    }
+    };
   },
-}
+};
 
-const copilotCustomerContext: AiToolDefinition<CustomerContextInput, CopilotCustomerContextResult> = {
-  name: 'copilot_customer_context',
+const copilotCustomerContext: AiToolDefinition<
+  CustomerContextInput,
+  CopilotCustomerContextResult
+> = {
+  name: "copilot_customer_context",
   description: `Get customer context for a live copilot session.
 
 Returns identity, company, lifetime value, order metrics, top categories, and latest relationship notes.`,
   inputSchema: z.object({
-    customerId: z.string().uuid().describe('Customer entity ID for a person record'),
+    customerId: z
+      .string()
+      .uuid()
+      .describe("Customer entity ID for a person record"),
   }),
-  requiredFeatures: ['voice_channels.copilot.view'],
+  requiredFeatures: ["voice_channels.copilot.view"],
   handler: async (input, ctx) => {
-    const { em, organizationId, tenantId } = requireScope(ctx)
+    const { em, organizationId, tenantId } = requireScope(ctx);
 
     const customer = await em.findOne(
       CustomerEntity,
@@ -474,13 +546,13 @@ Returns identity, company, lifetime value, order metrics, top categories, and la
         id: input.customerId,
         organizationId,
         tenantId,
-        kind: 'person',
+        kind: "person",
       },
-      { populate: ['personProfile', 'personProfile.company', 'companyProfile'] }
-    )
+      { populate: ["personProfile", "personProfile.company", "companyProfile"] }
+    );
 
     if (!customer) {
-      throw new Error('Customer not found')
+      throw new Error("Customer not found");
     }
 
     const orders = await em.find(
@@ -492,11 +564,11 @@ Returns identity, company, lifetime value, order metrics, top categories, and la
         deletedAt: null,
       },
       {
-        orderBy: { placedAt: 'DESC', createdAt: 'DESC' },
+        orderBy: { placedAt: "DESC", createdAt: "DESC" },
         limit: 100,
-        populate: ['lines'],
+        populate: ["lines"],
       }
-    )
+    );
 
     const activities = await em.find(
       CustomerActivity,
@@ -506,10 +578,10 @@ Returns identity, company, lifetime value, order metrics, top categories, and la
         entity: customer,
       },
       {
-        orderBy: { occurredAt: 'DESC', createdAt: 'DESC' },
+        orderBy: { occurredAt: "DESC", createdAt: "DESC" },
         limit: 5,
       }
-    )
+    );
 
     const comments = await em.find(
       CustomerComment,
@@ -520,68 +592,89 @@ Returns identity, company, lifetime value, order metrics, top categories, and la
         deletedAt: null,
       },
       {
-        orderBy: { createdAt: 'DESC' },
+        orderBy: { createdAt: "DESC" },
         limit: 3,
       }
-    )
+    );
 
     const lifetimeValue = orders.reduce(
       (sum, order) => sum + normalizeMoney(order.grandTotalGrossAmount),
       0
-    )
-    const orderCount = orders.length
-    const avgOrderValue = orderCount > 0 ? lifetimeValue / orderCount : 0
+    );
+    const orderCount = orders.length;
+    const avgOrderValue = orderCount > 0 ? lifetimeValue / orderCount : 0;
     const lastOrderDate = orders[0]?.placedAt
-      ? orders[0].placedAt.toISOString().split('T')[0]
-      : 'Brak'
-    const personProfile = customer.personProfile
-    const company = personProfile?.company
-    const latestComment = comments[0]?.body
-    const latestActivity = activities.find((activity) => readString(activity.body) || readString(activity.subject))
+      ? orders[0].placedAt.toISOString().split("T")[0]
+      : "Brak";
+    const personProfile = customer.personProfile;
+    const company = personProfile?.company;
+    const latestComment = comments[0]?.body;
+    const latestActivity = activities.find(
+      (activity) => readString(activity.body) || readString(activity.subject)
+    );
 
     return {
       customer: {
         id: customer.id,
         name:
           readString(customer.displayName) ??
-          [readString(personProfile?.firstName), readString(personProfile?.lastName)].filter(Boolean).join(' '),
+          [
+            readString(personProfile?.firstName),
+            readString(personProfile?.lastName),
+          ]
+            .filter(Boolean)
+            .join(" "),
         company:
           readString(company?.displayName) ??
           readString(company?.companyProfile?.legalName) ??
-          '',
+          "",
         lifetimeValue: Math.round(lifetimeValue * 100) / 100,
-        currency: orders[0]?.currencyCode ?? 'PLN',
+        currency: orders[0]?.currencyCode ?? "PLN",
         lastOrderDate,
         orderCount,
         avgOrderValue: Math.round(avgOrderValue * 100) / 100,
         topCategories: extractTopCategories(orders),
         openTickets: 0,
-        assignedRep: customer.ownerUserId ?? '',
+        assignedRep: customer.ownerUserId ?? "",
         notes:
           readString(latestComment) ??
           readString(latestActivity?.body) ??
           readString(latestActivity?.subject) ??
-          '',
+          "",
       },
-    }
+    };
   },
-}
+};
 
-const copilotCheckPricing: AiToolDefinition<PricingCheckInput, CopilotPricingCheckResult | null> = {
-  name: 'copilot_check_pricing',
+const copilotCheckPricing: AiToolDefinition<
+  PricingCheckInput,
+  CopilotPricingCheckResult | null
+> = {
+  name: "copilot_check_pricing",
   description: `Check pricing details for a product in the current organization.
 
 Returns the base price, customer-specific price when applicable, and active catalog offer data.`,
   inputSchema: z.object({
-    productId: z.string().uuid().optional().describe('Exact product ID when known'),
-    customerId: z.string().uuid().optional().describe('Customer entity ID used for tier or direct customer pricing'),
-    context: z.string().optional().describe('Conversation text used to locate a product by keywords'),
+    productId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Exact product ID when known"),
+    customerId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Customer entity ID used for tier or direct customer pricing"),
+    context: z
+      .string()
+      .optional()
+      .describe("Conversation text used to locate a product by keywords"),
   }),
-  requiredFeatures: ['voice_channels.copilot.view'],
+  requiredFeatures: ["voice_channels.copilot.view"],
   handler: async (input, ctx) => {
-    const { em, organizationId, tenantId } = requireScope(ctx)
+    const { em, organizationId, tenantId } = requireScope(ctx);
 
-    let product: CatalogProduct | null = null
+    let product: CatalogProduct | null = null;
 
     if (input.productId) {
       product = await em.findOne(CatalogProduct, {
@@ -589,33 +682,31 @@ Returns the base price, customer-specific price when applicable, and active cata
         organizationId,
         tenantId,
         deletedAt: null,
-      })
+      });
     } else if (readString(input.context)) {
-      const activeProducts = await em.find(
-        CatalogProduct,
-        {
-          organizationId,
-          tenantId,
-          isActive: true,
-          deletedAt: null,
-        },
-        {
-          orderBy: { title: 'ASC' },
-          limit: 250,
-        }
-      )
-
-      product =
-        rankProductsForContext(
-          activeProducts,
-          tokenizeSearchText(input.context ?? ''),
-          input.context,
-          1,
-        )[0] ?? null
+      const tokens = (input.context ?? "")
+        .split(/\s+/)
+        .map((t: string) => t.trim())
+        .filter((t: string) => t.length >= 3);
+      if (tokens.length > 0) {
+        const pattern = buildKeywordPattern(tokens);
+        product =
+          (await em.findOne(
+            CatalogProduct,
+            {
+              organizationId,
+              tenantId,
+              isActive: true,
+              deletedAt: null,
+              $or: [{ title: { $re: pattern } }, { sku: { $re: pattern } }],
+            },
+            { orderBy: { title: "ASC" } }
+          )) ?? null;
+      }
     }
 
     if (!product) {
-      return null
+      return null;
     }
 
     const priceRows = await em.find(
@@ -625,34 +716,43 @@ Returns the base price, customer-specific price when applicable, and active cata
         tenantId,
         product,
       },
-      { populate: ['offer', 'priceKind'] }
-    )
+      { populate: ["offer", "priceKind"] }
+    );
 
-    const basePriceCandidates = priceRows.filter(isBaselinePriceRow)
+    const basePriceCandidates = priceRows.filter(isBaselinePriceRow);
     const basePriceRow =
       selectBestPrice(
-        ((basePriceCandidates.length ? basePriceCandidates : priceRows.filter((row) => !row.customerId && !row.customerGroupId)) as PriceRow[]),
+        (basePriceCandidates.length
+          ? basePriceCandidates
+          : priceRows.filter(
+              (row) => !row.customerId && !row.customerGroupId
+            )) as PriceRow[],
         { quantity: 1, date: new Date() }
-      ) ?? null
+      ) ?? null;
     const customerPriceRow =
-      selectBestPrice(
-        (priceRows as PriceRow[]),
-        {
-          customerId: input.customerId ?? null,
-          quantity: 1,
-          date: new Date(),
-        }
-      ) ?? null
+      selectBestPrice(priceRows as PriceRow[], {
+        customerId: input.customerId ?? null,
+        quantity: 1,
+        date: new Date(),
+      }) ?? null;
 
-    const basePrice = normalizeMoney(basePriceRow?.unitPriceGross ?? basePriceRow?.unitPriceNet)
+    const basePrice = normalizeMoney(
+      basePriceRow?.unitPriceGross ?? basePriceRow?.unitPriceNet
+    );
     const customerPrice = normalizeMoney(
-      customerPriceRow?.unitPriceGross ?? customerPriceRow?.unitPriceNet ?? basePrice
-    )
+      customerPriceRow?.unitPriceGross ??
+        customerPriceRow?.unitPriceNet ??
+        basePrice
+    );
+
+    if (basePrice <= 0 && customerPrice <= 0) {
+      return null;
+    }
     const currency =
       readString(customerPriceRow?.currencyCode) ??
       readString(basePriceRow?.currencyCode) ??
       readString(product.primaryCurrencyCode) ??
-      'PLN'
+      "PLN";
 
     const activeOffers = await em.find(
       CatalogOffer,
@@ -663,8 +763,8 @@ Returns the base price, customer-specific price when applicable, and active cata
         isActive: true,
         deletedAt: null,
       },
-      { orderBy: { createdAt: 'DESC' } }
-    )
+      { orderBy: { createdAt: "DESC" } }
+    );
 
     return {
       productId: product.id,
@@ -674,32 +774,42 @@ Returns the base price, customer-specific price when applicable, and active cata
       currency,
       floorPrice: Math.round(basePrice * 0.88 * 100) / 100,
       maxDiscountPercent: 12,
-      activePromotions: buildPromotionSummary(basePrice, priceRows, activeOffers),
-    }
+      activePromotions: buildPromotionSummary(
+        basePrice,
+        priceRows,
+        activeOffers
+      ),
+    };
   },
-}
+};
 
-const copilotOpenDeals: AiToolDefinition<OpenDealsInput, CopilotOpenDealsResult> = {
-  name: 'copilot_open_deals',
+const copilotOpenDeals: AiToolDefinition<
+  OpenDealsInput,
+  CopilotOpenDealsResult
+> = {
+  name: "copilot_open_deals",
   description: `Get open deals linked to a person customer.
 
 Returns active deals with stage, value, probability, and a stalled flag.`,
   inputSchema: z.object({
-    customerId: z.string().uuid().describe('Customer entity ID for a person record'),
+    customerId: z
+      .string()
+      .uuid()
+      .describe("Customer entity ID for a person record"),
   }),
-  requiredFeatures: ['voice_channels.copilot.view'],
+  requiredFeatures: ["voice_channels.copilot.view"],
   handler: async (input, ctx) => {
-    const { em, organizationId, tenantId } = requireScope(ctx)
+    const { em, organizationId, tenantId } = requireScope(ctx);
 
     const customer = await em.findOne(CustomerEntity, {
       id: input.customerId,
       organizationId,
       tenantId,
-      kind: 'person',
-    })
+      kind: "person",
+    });
 
     if (!customer) {
-      throw new Error('Customer not found')
+      throw new Error("Customer not found");
     }
 
     const links = await em.find(
@@ -708,43 +818,51 @@ Returns active deals with stage, value, probability, and a stalled flag.`,
         person: customer,
       },
       {
-        populate: ['deal'],
-        orderBy: { createdAt: 'DESC' },
+        populate: ["deal"],
+        orderBy: { createdAt: "DESC" },
       }
-    )
+    );
 
-    const now = Date.now()
+    const now = Date.now();
     const deals = links
       .map((link) => link.deal)
-      .filter((deal) => deal.organizationId === organizationId && deal.tenantId === tenantId)
-      .filter((deal) => deal.status === 'open')
-      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())
+      .filter(
+        (deal) =>
+          deal.organizationId === organizationId && deal.tenantId === tenantId
+      )
+      .filter((deal) => deal.status === "open")
+      .sort(
+        (left, right) => right.updatedAt.getTime() - left.updatedAt.getTime()
+      );
 
     return {
       deals: deals.map((deal) => {
-        const stageUpdatedAt = deal.updatedAt ?? deal.createdAt
-        const daysInStage = Math.floor((now - stageUpdatedAt.getTime()) / 86_400_000)
+        const stageUpdatedAt = deal.updatedAt ?? deal.createdAt;
+        const daysInStage = Math.floor(
+          (now - stageUpdatedAt.getTime()) / 86_400_000
+        );
 
         return {
           id: deal.id,
           title: deal.title,
-          stage: readString(deal.pipelineStage) ?? 'Unknown',
+          stage: readString(deal.pipelineStage) ?? "Unknown",
           value: normalizeMoney(deal.valueAmount),
-          currency: readString(deal.valueCurrency) ?? 'PLN',
+          currency: readString(deal.valueCurrency) ?? "PLN",
           daysInStage,
           isStalled: daysInStage > 14,
-          probability: typeof deal.probability === 'number' ? deal.probability : 0,
-        }
+          probability:
+            typeof deal.probability === "number" ? deal.probability : 0,
+        };
       }),
-    }
+    };
   },
-}
+};
 
 export const aiTools: AiToolDefinition[] = [
   copilotSearchProducts,
   copilotCustomerContext,
   copilotCheckPricing,
   copilotOpenDeals,
-]
+];
 
-export default aiTools
+export default aiTools;
