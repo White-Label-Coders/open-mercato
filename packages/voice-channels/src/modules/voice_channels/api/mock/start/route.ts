@@ -50,6 +50,11 @@ export async function POST(req: Request) {
     return Response.json({ error: 'Missing tenant/organization scope' }, { status: 401 })
   }
 
+  const repUserId =
+    (typeof ctx.auth?.sub === 'string' && ctx.auth.sub) ||
+    (typeof (ctx.auth as any)?.userId === 'string' && (ctx.auth as any).userId) ||
+    null
+
   const simulator = ctx.container.resolve<any>('mockTranscriptSimulator')
   const orchestrator = ctx.container.resolve<any>('copilotOrchestrator')
 
@@ -64,6 +69,7 @@ export async function POST(req: Request) {
       body.script.customerId,
       tenantId,
       organizationId,
+      repUserId,
     )
     return Response.json(result)
   } catch (err) {

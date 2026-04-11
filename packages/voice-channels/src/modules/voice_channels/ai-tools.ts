@@ -446,19 +446,25 @@ Returns the base price, customer-specific price when applicable, and active cata
         deletedAt: null,
       })
     } else if (readString(input.context)) {
-      const pattern = buildKeywordPattern((input.context ?? '').split(/\s+/))
-      product =
-        (await em.findOne(
-          CatalogProduct,
-          {
-            organizationId,
-            tenantId,
-            isActive: true,
-            deletedAt: null,
-            $or: [{ title: { $re: pattern } }, { sku: { $re: pattern } }],
-          },
-          { orderBy: { title: 'ASC' } }
-        )) ?? null
+      const tokens = (input.context ?? '')
+        .split(/\s+/)
+        .map((t: string) => t.trim())
+        .filter((t: string) => t.length >= 3)
+      if (tokens.length > 0) {
+        const pattern = buildKeywordPattern(tokens)
+        product =
+          (await em.findOne(
+            CatalogProduct,
+            {
+              organizationId,
+              tenantId,
+              isActive: true,
+              deletedAt: null,
+              $or: [{ title: { $re: pattern } }, { sku: { $re: pattern } }],
+            },
+            { orderBy: { title: 'ASC' } }
+          )) ?? null
+      }
     }
 
     if (!product) {
@@ -495,6 +501,10 @@ Returns the base price, customer-specific price when applicable, and active cata
     const customerPrice = normalizeMoney(
       customerPriceRow?.unitPriceGross ?? customerPriceRow?.unitPriceNet ?? basePrice
     )
+
+    if (basePrice <= 0 && customerPrice <= 0) {
+      return null
+    }
     const currency =
       readString(customerPriceRow?.currencyCode) ??
       readString(basePriceRow?.currencyCode) ??

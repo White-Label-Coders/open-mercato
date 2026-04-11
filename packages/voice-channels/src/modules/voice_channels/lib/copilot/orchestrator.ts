@@ -20,6 +20,8 @@ import {
   COPILOT_CONTEXT_MAX_LENGTH,
 } from './company-context'
 import type { EntityManager } from '@mikro-orm/core'
+import type { CommandBus, CommandRuntimeContext } from '@open-mercato/shared/lib/commands'
+import { CUSTOMER_INTERACTION_ACTIVITY_ADAPTER_SOURCE } from '@open-mercato/core/modules/customers/lib/interactionCompatibility'
 
 const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
   Object.fromEntries(aiTools.map((tool) => [tool.name, tool.handler as any]))
@@ -40,13 +42,16 @@ const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
 interface CopilotSession {
   callId: string
   customerId: string | null
+  repUserId: string | null
   tenantId: string
   organizationId: string
   contextWindow: TranscriptSegment[]
   recentSuggestionTypes: Map<string, number>
   suggestionCounter: number
+  lastProductId: string | null
   // Company memory: resolved + loaded once at startSession, refreshed at endSession.
   companyProfileId: string | null
+  companyEntityId: string | null
   companyContext: string | null
 }
 
@@ -93,18 +98,22 @@ export class CopilotOrchestrator {
     callId: string,
     customerId: string | undefined,
     tenantId: string,
-    organizationId: string
+    organizationId: string,
+    repUserId?: string | null,
   ): Promise<void> {
     const session: CopilotSession = {
       callId,
       customerId: customerId ?? null,
+      repUserId: repUserId ?? null,
       tenantId,
       organizationId,
       contextWindow: [],
       recentSuggestionTypes: new Map(),
       suggestionCounter: 0,
       companyProfileId: null,
+      companyEntityId: null,
       companyContext: null,
+      lastProductId: null,
     }
     this.sessions.set(callId, session)
 
@@ -119,6 +128,7 @@ export class CopilotOrchestrator {
         })
         if (company) {
           session.companyProfileId = company.companyProfileId
+          session.companyEntityId = company.companyEntityId
           session.companyContext = await readCompanyContext(em, company.companyProfileId, {
             tenantId,
             organizationId,
@@ -211,6 +221,25 @@ export class CopilotOrchestrator {
   async endSession(callId: string): Promise<void> {
     const session = this.sessions.get(callId)
     if (!session) return
+
+    try {
+      const finalQuickAction = await this.buildQuickAction(
+        session,
+        'Podsumowanie rozmowy',
+        0,
+        1,
+      )
+      finalQuickAction.detectedIntent = 'Szybkie akcje po rozmowie'
+      await this.emitSuggestion(session, finalQuickAction)
+    } catch (err) {
+      console.error('[Orchestrator] Failed to emit final quick-action card:', err)
+    }
+
+    try {
+      await this.registerCallActivity(session)
+    } catch (err) {
+      console.error('[Orchestrator] Failed to register call activity:', err)
+    }
 
     try {
       if (session.companyProfileId && session.contextWindow.length > 0) {
@@ -377,6 +406,8 @@ Return only the updated memory document.`
 
     if (!toolResult || toolResult.products.length === 0) return null
 
+    session.lastProductId = toolResult.products[0]?.id ?? session.lastProductId
+
     return {
       id: this.nextSuggestionId(session),
       type: 'product_suggestion',
@@ -404,7 +435,8 @@ Return only the updated memory document.`
 
     const toolResult = await this.callMcpTool<CopilotPricingCheckResult>('copilot_check_pricing', {
       customerId: session.customerId,
-      context: recentProductSegments.map(s => s.text).join(' '),
+      productId: session.lastProductId ?? undefined,
+      context: session.lastProductId ? undefined : recentProductSegments.map(s => s.text).join(' '),
     }, session)
 
     if (!toolResult) return null
@@ -514,6 +546,102 @@ Return only the updated memory document.`
     } catch (err) {
       console.error(`[Orchestrator] AI tool "${toolName}" error:`, err)
       return null
+    }
+  }
+
+  /**
+   * Persist the completed call as a `call` activity on the linked customer.
+   * Uses the canonical customers.interactions.create command so the record
+   * shows up in the Activities tab for the customer detail page.
+   */
+  private async registerCallActivity(session: CopilotSession): Promise<void> {
+    const targetIds = Array.from(
+      new Set(
+        [session.customerId, session.companyEntityId].filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        ),
+      ),
+    )
+
+    if (targetIds.length === 0) {
+      console.warn('[Orchestrator] registerCallActivity: no customer/company on session', session.callId)
+      return
+    }
+
+    let commandBus: CommandBus
+    try {
+      commandBus = this.container.resolve('commandBus') as CommandBus
+    } catch (err) {
+      console.error('[Orchestrator] registerCallActivity: commandBus not resolvable', err)
+      return
+    }
+    if (!commandBus) return
+
+    const detectedIntents = Array.from(session.recentSuggestionTypes.keys())
+    const transcript = session.contextWindow
+      .map((segment) => `[${segment.speaker}] ${segment.text}`)
+      .join('\n')
+      .slice(0, 9000)
+
+    const bodyParts: string[] = [`Call ID: ${session.callId}`]
+    if (detectedIntents.length > 0) {
+      bodyParts.push(`Wykryte intencje: ${detectedIntents.join(', ')}`)
+    }
+    if (transcript.length > 0) {
+      bodyParts.push('', 'Transkrypcja:', transcript)
+    }
+    const body = bodyParts.join('\n')
+    const occurredAt = new Date()
+    const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/
+    const repUserId = session.repUserId && UUID_REGEX.test(session.repUserId) ? session.repUserId : null
+
+    const commandContext: CommandRuntimeContext = {
+      container: this.container as any,
+      auth: {
+        sub: repUserId,
+        userId: repUserId,
+        tenantId: session.tenantId,
+        orgId: session.organizationId,
+      } as any,
+      organizationScope: null,
+      selectedOrganizationId: session.organizationId,
+      organizationIds: [session.organizationId],
+      syncOrigin: 'voice_channels.copilot',
+    }
+
+    for (const targetId of targetIds) {
+      try {
+        const { result } = await commandBus.execute<
+          Record<string, unknown>,
+          { interactionId: string; entityId: string }
+        >('customers.interactions.create', {
+          input: {
+            entityId: targetId,
+            interactionType: 'call',
+            title: 'Rozmowa telefoniczna (Copilot)',
+            body,
+            status: 'done',
+            occurredAt,
+            authorUserId: repUserId,
+            ownerUserId: repUserId,
+            source: CUSTOMER_INTERACTION_ACTIVITY_ADAPTER_SOURCE,
+            appearanceIcon: 'lucide:phone-call',
+          },
+          ctx: commandContext,
+        })
+
+        console.log('[Orchestrator] registerCallActivity: call activity created', {
+          callId: session.callId,
+          entityId: targetId,
+          interactionId: result?.interactionId ?? null,
+        })
+      } catch (err) {
+        console.error('[Orchestrator] registerCallActivity: failed for target', {
+          callId: session.callId,
+          targetId,
+          error: err,
+        })
+      }
     }
   }
 
