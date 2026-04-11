@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from '@open-mercato/shared/lib/testing/renderWithProviders'
-import { FlashMessages, flash } from '../FlashMessages'
+import { FlashMessages, flash, notify } from '../FlashMessages'
 
 describe('FlashMessages', () => {
   beforeEach(() => {
@@ -44,5 +44,29 @@ describe('FlashMessages', () => {
     })
 
     expect(screen.queryByText('Pay link published')).not.toBeInTheDocument()
+  })
+
+  it('renders an action button for notify payloads', () => {
+    const onClick = jest.fn()
+
+    renderWithProviders(<FlashMessages />)
+
+    act(() => {
+      notify({
+        message: 'Quote created',
+        type: 'success',
+        action: {
+          label: 'Open quote',
+          onClick,
+        },
+      })
+    })
+
+    expect(screen.getByText('Quote created')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open quote' }))
+
+    expect(onClick).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Quote created')).not.toBeInTheDocument()
   })
 })

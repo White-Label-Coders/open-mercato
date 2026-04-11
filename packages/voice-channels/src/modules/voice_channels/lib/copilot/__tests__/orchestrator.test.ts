@@ -1,5 +1,10 @@
+jest.mock('../../../events', () => ({
+  emitVoiceEvent: jest.fn().mockResolvedValue(undefined),
+}))
+
 import { CopilotOrchestrator } from '../orchestrator'
 import type { TranscriptSegment } from '@open-mercato/voice-channels/modules/voice_channels/types'
+import { emitVoiceEvent } from '../../../events'
 
 const mockContainer = {
   resolve: jest.fn().mockReturnValue(undefined),
@@ -58,5 +63,193 @@ describe('CopilotOrchestrator', () => {
     }
     // Should not attempt to route intents for non-customer speech
     await expect(orchestrator.processSegment('call-3', segment)).resolves.not.toThrow()
+  })
+
+  it('emits create_quote quick action for order intent', async () => {
+    await orchestrator.startSession('call-4', '11111111-1111-4111-8111-111111111111', 'tenant-1', 'org-1')
+
+    const segment: TranscriptSegment = {
+      segmentId: 4,
+      speaker: 'customer',
+      text: 'Składam zamówienie, potwierdzam i proszę przygotować dokument.',
+      confidence: 0.98,
+      isFinal: true,
+      startTime: 5,
+      endTime: 8,
+    }
+
+    await orchestrator.processSegment('call-4', segment)
+
+    expect(emitVoiceEvent).toHaveBeenCalledWith(
+      'voice_channels.copilot.suggestion',
+      expect.objectContaining({
+        callId: 'call-4',
+        suggestion: expect.objectContaining({
+          type: 'quick_action',
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              actionType: 'create_quote',
+              prefill: expect.objectContaining({
+                customerId: '11111111-1111-4111-8111-111111111111',
+              }),
+            }),
+          ]),
+        }),
+      }),
+      { persistent: false },
+    )
+  })
+
+  it('builds multiple quote lines with exact quantities from conversation context', async () => {
+    const session = {
+      callId: 'call-multi',
+      customerId: '11111111-1111-4111-8111-111111111111',
+      repUserId: null,
+      tenantId: 'tenant-1',
+      organizationId: 'org-1',
+      contextWindow: [
+        {
+          segmentId: 10,
+          speaker: 'customer',
+          text: 'Proszę przygotować 123 sztuki Widget Alpha i 304 sztuki Widget Beta.',
+          confidence: 0.99,
+          isFinal: true,
+          startTime: 0,
+          endTime: 5,
+        },
+      ],
+      recentSuggestionTypes: new Map([['order_intent', Date.now()]]),
+      suggestionCounter: 0,
+      lastProductId: null,
+      companyProfileId: null,
+      companyEntityId: '22222222-2222-4222-8222-222222222222',
+      companyContext: null,
+    }
+
+    jest.spyOn(orchestrator as any, 'resolvePreferredChannelId').mockResolvedValue('channel-1')
+    jest.spyOn(orchestrator as any, 'callMcpTool').mockImplementation(async (toolName: string) => {
+      if (toolName !== 'copilot_search_products') return null
+      return {
+        products: [
+          {
+            id: 'product-alpha',
+            name: 'Widget Alpha',
+            sku: 'ALPHA-01',
+            price: { amount: 10, currency: 'PLN', priceType: 'standard' },
+            available: true,
+            stockQuantity: 1000,
+            category: 'Widgets',
+          },
+          {
+            id: 'product-beta',
+            name: 'Widget Beta',
+            sku: 'BETA-01',
+            price: { amount: 12, currency: 'PLN', priceType: 'standard' },
+            available: true,
+            stockQuantity: 1000,
+            category: 'Widgets',
+          },
+        ],
+      }
+    })
+
+    const result = await (orchestrator as any).buildQuickAction(
+      session,
+      'Klient chce złożyć zamówienie',
+      10,
+      0.98,
+      ['widget', 'alpha', 'beta'],
+    )
+
+    expect(result).toMatchObject({
+      type: 'quick_action',
+      actions: expect.arrayContaining([
+        expect.objectContaining({
+          actionType: 'create_quote',
+          prefill: expect.objectContaining({
+            lines: expect.arrayContaining([
+              expect.objectContaining({ productId: 'product-alpha', quantity: 123 }),
+              expect.objectContaining({ productId: 'product-beta', quantity: 304 }),
+            ]),
+          }),
+        }),
+      ]),
+    })
+  })
+
+  it('uses neighboring rep confirmation when product and quantity are split across segments', async () => {
+    const session = {
+      callId: 'call-context',
+      customerId: '11111111-1111-4111-8111-111111111111',
+      repUserId: null,
+      tenantId: 'tenant-1',
+      organizationId: 'org-1',
+      contextWindow: [
+        {
+          segmentId: 20,
+          speaker: 'customer',
+          text: 'Chodzi o Widget Alpha.',
+          confidence: 0.99,
+          isFinal: true,
+          startTime: 0,
+          endTime: 2,
+        },
+        {
+          segmentId: 21,
+          speaker: 'rep',
+          text: 'Potwierdzam, 123 sztuki Widget Alpha.',
+          confidence: 0.99,
+          isFinal: true,
+          startTime: 2,
+          endTime: 4,
+        },
+      ],
+      recentSuggestionTypes: new Map([['order_intent', Date.now()]]),
+      suggestionCounter: 0,
+      lastProductId: null,
+      companyProfileId: null,
+      companyEntityId: '22222222-2222-4222-8222-222222222222',
+      companyContext: null,
+    }
+
+    jest.spyOn(orchestrator as any, 'resolvePreferredChannelId').mockResolvedValue('channel-1')
+    jest.spyOn(orchestrator as any, 'callMcpTool').mockImplementation(async (toolName: string) => {
+      if (toolName !== 'copilot_search_products') return null
+      return {
+        products: [
+          {
+            id: 'product-alpha',
+            name: 'Widget Alpha',
+            sku: 'ALPHA-01',
+            price: { amount: 10, currency: 'PLN', priceType: 'standard' },
+            available: true,
+            stockQuantity: 1000,
+            category: 'Widgets',
+          },
+        ],
+      }
+    })
+
+    const result = await (orchestrator as any).buildQuickAction(
+      session,
+      'Klient chce złożyć zamówienie',
+      21,
+      0.98,
+      ['widget', 'alpha'],
+    )
+
+    expect(result).toMatchObject({
+      type: 'quick_action',
+      actions: expect.arrayContaining([
+        expect.objectContaining({
+          actionType: 'create_quote',
+          prefill: expect.objectContaining({
+            lines: expect.arrayContaining([
+              expect.objectContaining({ productId: 'product-alpha', quantity: 123 }),
+            ]),
+          }),
+        }),
+      ]),
+    })
   })
 })

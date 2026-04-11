@@ -2,15 +2,39 @@
 import * as React from 'react'
 import { X } from 'lucide-react'
 import { IconButton } from '../primitives/icon-button'
+import { Button } from '../primitives/button'
 
 export type FlashKind = 'success' | 'error' | 'warning' | 'info'
+export type FlashAction = {
+  label: string
+  onClick: () => void
+}
+export type FlashOptions = {
+  message: string
+  type?: FlashKind
+  action?: FlashAction
+}
 
 // Programmatic API to show a flash message without navigation.
 // Consumers can import { flash } and call flash('text', 'error').
 export function flash(message: string, type: FlashKind = 'info') {
+  dispatchFlash({ message, type })
+}
+
+export function notify(options: FlashOptions) {
+  dispatchFlash(options)
+}
+
+function dispatchFlash(options: FlashOptions) {
   if (typeof window === 'undefined') return
-  const evt = new CustomEvent('flash', { detail: { message, type } })
+  const evt = new CustomEvent<FlashOptions>('flash', { detail: options })
   window.dispatchEvent(evt)
+}
+
+export function useNotify() {
+  return React.useCallback((options: FlashOptions) => {
+    notify(options)
+  }, [])
 }
 
 type HistoryMethod = History['pushState']
@@ -86,8 +110,7 @@ function useLocationKey() {
 }
 
 function FlashMessagesInner() {
-  const [msg, setMsg] = React.useState<string | null>(null)
-  const [kind, setKind] = React.useState<FlashKind>('info')
+  const [current, setCurrent] = React.useState<FlashOptions | null>(null)
   const locationKey = useLocationKey()
   const dismissTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -98,13 +121,16 @@ function FlashMessagesInner() {
     }
   }, [])
 
-  const showFlash = React.useCallback((message: string, type: FlashKind) => {
+  const showFlash = React.useCallback((options: FlashOptions) => {
     clearDismissTimer()
-    setMsg(message)
-    setKind(type)
+    setCurrent({
+      message: options.message,
+      type: options.type ?? 'info',
+      action: options.action,
+    })
     dismissTimerRef.current = setTimeout(() => {
       dismissTimerRef.current = null
-      setMsg(null)
+      setCurrent(null)
     }, 3000)
   }, [clearDismissTimer])
 
@@ -121,7 +147,7 @@ function FlashMessagesInner() {
     const message = url.searchParams.get('flash')
     const type = (url.searchParams.get('type') as FlashKind | null) || 'success'
     if (message) {
-      showFlash(message, type)
+      showFlash({ message, type })
       url.searchParams.delete('flash')
       url.searchParams.delete('type')
       window.history.replaceState({}, '', url.toString())
@@ -131,31 +157,53 @@ function FlashMessagesInner() {
   // Listen for programmatic flash events
   React.useEffect(() => {
     const handler = (e: Event) => {
-      const ce = e as CustomEvent<{ message?: string; type?: FlashKind }>
+      const ce = e as CustomEvent<FlashOptions>
       const text = ce.detail?.message
-      const t = ce.detail?.type || 'info'
       if (!text) return
-      showFlash(text, t)
+      showFlash({
+        message: text,
+        type: ce.detail?.type ?? 'info',
+        action: ce.detail?.action,
+      })
     }
     window.addEventListener('flash', handler as EventListener)
     return () => window.removeEventListener('flash', handler as EventListener)
   }, [showFlash])
 
-  if (!msg) return null
+  if (!current) return null
 
+  const kind = current.type ?? 'info'
   const color = kind === 'success' ? 'bg-emerald-600' : kind === 'error' ? 'bg-red-600' : kind === 'warning' ? 'bg-amber-500' : 'bg-blue-600'
 
   return (
     <div className="pointer-events-none fixed left-3 right-3 top-3 z-[1200] sm:left-auto sm:right-4 sm:w-[380px]">
       <div className={`pointer-events-auto rounded px-3 py-2 text-white shadow-md ${color}`}>
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-sm">{msg}</div>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm">{current.message}</div>
+            {current.action ? (
+              <div className="mt-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="bg-white/15 text-white hover:bg-white/25"
+                  onClick={() => {
+                    current.action?.onClick()
+                    setCurrent(null)
+                  }}
+                >
+                  {current.action.label}
+                </Button>
+              </div>
+            ) : null}
+          </div>
           <IconButton
             type="button"
             variant="ghost"
             size="sm"
             className="text-white/90 hover:text-white hover:bg-white/10"
-            onClick={() => setMsg(null)}
+            onClick={() => setCurrent(null)}
             aria-label="Dismiss"
           >
             <X size={16} />
