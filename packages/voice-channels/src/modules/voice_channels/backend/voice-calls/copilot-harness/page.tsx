@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useT } from "@open-mercato/shared/lib/i18n/context";
 import { flash } from "@open-mercato/ui/backend/FlashMessages";
 import { apiCallOrThrow } from "@open-mercato/ui/backend/utils/apiCall";
 import { Button } from "@open-mercato/ui/primitives/button";
@@ -11,6 +12,7 @@ import { CopilotWorkspace } from "../../../components/copilot/CopilotWorkspace";
 const demoScript: MockCallScript = DEMO_1_ACME_STEEL;
 
 export default function CopilotHarnessPage() {
+  const t = useT();
   const [isRunning, setIsRunning] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -25,7 +27,10 @@ export default function CopilotHarnessPage() {
       });
       setIsRunning(true);
       flash(
-        "Demo call started — suggestions will stream from the orchestrator.",
+        t(
+          "voice_channels.copilot.harness.messages.started",
+          "Demo replay started for the Copilot QA harness."
+        ),
         "info"
       );
     } catch (error) {
@@ -90,7 +95,7 @@ export default function CopilotHarnessPage() {
               )}
             </span>
             <span>
-              Script customer:{" "}
+              {t("voice_channels.copilot.harness.scriptCustomer", "Script customer")}:{" "}
               <code className="font-mono">{demoScript.customerId}</code> (from
               demo-1-acme-steel.json)
             </span>

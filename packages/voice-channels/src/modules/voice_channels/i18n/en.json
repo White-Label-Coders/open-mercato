@@ -54,6 +54,7 @@
   "voice_channels.copilot.harness.startReplay": "Start replay",
   "voice_channels.copilot.harness.stopReplay": "Stop replay",
   "voice_channels.copilot.harness.notice": "QA harness only. The main Copilot UI remains event-driven and provider-agnostic.",
+  "voice_channels.copilot.harness.scriptCustomer": "Script customer",
   "voice_channels.copilot.harness.messages.started": "Demo replay started for the Copilot QA harness.",
   "voice_channels.copilot.harness.messages.stopped": "Demo replay stopped."
 }
