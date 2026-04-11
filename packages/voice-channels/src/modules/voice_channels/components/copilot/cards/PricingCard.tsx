@@ -1,5 +1,6 @@
 'use client'
 
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { PricingAlertCard } from '../../../types'
 
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function PricingCard({ card, onDismiss }: Props) {
+  const t = useT()
   return (
     <div
       style={{
@@ -29,7 +31,9 @@ export function PricingCard({ card, onDismiss }: Props) {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '13px', fontWeight: 700, color: '#92400e' }}>💰 Alert cenowy</span>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: '#92400e' }}>
+            💰 {t('voice_channels.copilot.cards.pricing.title', 'Pricing alert')}
+          </span>
           <span
             style={{
               fontSize: '11px',
@@ -40,10 +44,18 @@ export function PricingCard({ card, onDismiss }: Props) {
               color: '#854d0e',
             }}
           >
-            {card.matchConfidence}% match
+            {t('voice_channels.copilot.cards.pricing.match', '{confidence}% match', {
+              confidence: card.matchConfidence,
+            })}
           </span>
         </div>
-        <IconButton type="button" variant="ghost" size="sm" onClick={onDismiss} aria-label="Dismiss pricing alert">
+        <IconButton
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onDismiss}
+          aria-label={t('voice_channels.copilot.cards.dismiss.pricingAlert', 'Dismiss pricing alert')}
+        >
           ✕
         </IconButton>
       </div>
@@ -61,7 +73,9 @@ export function PricingCard({ card, onDismiss }: Props) {
               borderRadius: '6px',
             }}
           >
-            <div style={{ fontSize: '11px', color: '#64748b' }}>Cena klienta</div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>
+              {t('voice_channels.copilot.cards.pricing.customerPrice', 'Customer price')}
+            </div>
             <div style={{ fontSize: '18px', fontWeight: 700, color: '#1e293b' }}>
               {card.currentPrice.toFixed(2)} {card.currency}
             </div>
@@ -75,7 +89,9 @@ export function PricingCard({ card, onDismiss }: Props) {
               borderRadius: '6px',
             }}
           >
-            <div style={{ fontSize: '11px', color: '#64748b' }}>Cena minimalna</div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>
+              {t('voice_channels.copilot.cards.pricing.floorPrice', 'Minimum price')}
+            </div>
             <div style={{ fontSize: '18px', fontWeight: 700, color: '#dc2626' }}>
               {card.floorPrice.toFixed(2)} {card.currency}
             </div>
@@ -89,7 +105,9 @@ export function PricingCard({ card, onDismiss }: Props) {
               borderRadius: '6px',
             }}
           >
-            <div style={{ fontSize: '11px', color: '#64748b' }}>Max rabat</div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>
+              {t('voice_channels.copilot.cards.pricing.maxDiscount', 'Max discount')}
+            </div>
             <div style={{ fontSize: '18px', fontWeight: 700, color: '#059669' }}>
               {card.maxDiscountPercent}%
             </div>
@@ -98,7 +116,7 @@ export function PricingCard({ card, onDismiss }: Props) {
         {card.activePromotions.length > 0 && (
           <div>
             <div style={{ fontSize: '12px', fontWeight: 600, color: '#475569', marginBottom: '4px' }}>
-              Aktywne promocje:
+              {t('voice_channels.copilot.cards.pricing.activePromotions', 'Active promotions:')}
             </div>
             {card.activePromotions.map((promo, i) => (
               <div
@@ -109,7 +127,11 @@ export function PricingCard({ card, onDismiss }: Props) {
                   padding: '4px 0',
                 }}
               >
-                🏷️ {promo.name}: {promo.discount} (do {promo.validUntil})
+                🏷️ {promo.name}: {promo.discount} (
+                {t('voice_channels.copilot.cards.pricing.validUntil', 'until {date}', {
+                  date: promo.validUntil,
+                })}
+                )
               </div>
             ))}
           </div>

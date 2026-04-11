@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { ProductSuggestionCard } from '../../../types'
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export function ProductCard({ card, onDismiss }: Props) {
+  const t = useT()
   const [addedProductIds, setAddedProductIds] = useState<Set<string>>(new Set())
 
   return (
@@ -35,7 +37,7 @@ export function ProductCard({ card, onDismiss }: Props) {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ fontSize: '13px', fontWeight: 700, color: '#1e40af' }}>
-            📦 Sugestia produktu
+            📦 {t('voice_channels.copilot.cards.product.title', 'Product suggestion')}
           </span>
           <span
             style={{
@@ -47,10 +49,18 @@ export function ProductCard({ card, onDismiss }: Props) {
               color: card.matchConfidence >= 80 ? '#166534' : '#854d0e',
             }}
           >
-            {card.matchConfidence}% match
+            {t('voice_channels.copilot.cards.pricing.match', '{confidence}% match', {
+              confidence: card.matchConfidence,
+            })}
           </span>
         </div>
-        <IconButton type="button" variant="ghost" size="sm" onClick={onDismiss} aria-label="Dismiss product suggestion">
+        <IconButton
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onDismiss}
+          aria-label={t('voice_channels.copilot.cards.dismiss.productSuggestion', 'Dismiss product suggestion')}
+        >
           ✕
         </IconButton>
       </div>
@@ -68,7 +78,9 @@ export function ProductCard({ card, onDismiss }: Props) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: '14px', color: '#1e293b' }}>{product.name}</div>
-              <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>SKU: {product.sku}</div>
+              <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                {t('voice_channels.copilot.cards.product.sku', 'SKU: {sku}', { sku: product.sku })}
+              </div>
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontWeight: 700, fontSize: '16px', color: '#059669' }}>
@@ -93,8 +105,16 @@ export function ProductCard({ card, onDismiss }: Props) {
               }}
             >
               {product.available
-                ? `✓ W magazynie${product.stockQuantity ? ` (${product.stockQuantity} szt.)` : ''}`
-                : '✗ Brak w magazynie'}
+                ? `✓ ${t('voice_channels.copilot.cards.product.inStock', 'In stock{quantityPart}', {
+                    quantityPart: product.stockQuantity
+                      ? t(
+                          'voice_channels.copilot.cards.product.inStockQuantity',
+                          ' ({quantity} pcs.)',
+                          { quantity: product.stockQuantity },
+                        )
+                      : '',
+                  })}`
+                : `✗ ${t('voice_channels.copilot.cards.product.outOfStock', 'Out of stock')}`}
             </span>
             <Button
               type="button"
@@ -109,7 +129,9 @@ export function ProductCard({ card, onDismiss }: Props) {
                   : 'h-auto bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90'
               }
             >
-              {addedProductIds.has(product.id) ? '✓ Dodano do oferty' : '+ Dodaj do oferty'}
+              {addedProductIds.has(product.id)
+                ? `✓ ${t('voice_channels.copilot.cards.product.addedToOffer', 'Added to offer')}`
+                : `+ ${t('voice_channels.copilot.cards.product.addToOffer', 'Add to offer')}`}
             </Button>
           </div>
           {product.matchReason && (

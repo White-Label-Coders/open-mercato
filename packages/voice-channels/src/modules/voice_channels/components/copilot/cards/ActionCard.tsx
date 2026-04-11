@@ -1,5 +1,6 @@
 'use client'
 
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { Button } from '@open-mercato/ui/primitives/button'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
@@ -11,8 +12,16 @@ interface Props {
 }
 
 export function ActionCard({ card, onDismiss }: Props) {
+  const t = useT()
   const handleAction = (actionType: string) => {
-    flash(`Akcja ${actionType} nie jest jeszcze podłączona do workflow.`, 'info')
+    flash(
+      t(
+        'voice_channels.copilot.cards.quickActions.notConnected',
+        'Action {actionType} is not connected to a workflow yet.',
+        { actionType },
+      ),
+      'info',
+    )
   }
 
   return (
@@ -34,8 +43,16 @@ export function ActionCard({ card, onDismiss }: Props) {
           alignItems: 'center',
         }}
       >
-        <span style={{ fontSize: '13px', fontWeight: 700, color: '#166534' }}>⚡ Szybkie akcje</span>
-        <IconButton type="button" variant="ghost" size="sm" onClick={onDismiss} aria-label="Dismiss quick actions">
+        <span style={{ fontSize: '13px', fontWeight: 700, color: '#166534' }}>
+          ⚡ {t('voice_channels.copilot.cards.quickActions.title', 'Quick actions')}
+        </span>
+        <IconButton
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onDismiss}
+          aria-label={t('voice_channels.copilot.cards.dismiss.quickActions', 'Dismiss quick actions')}
+        >
           ✕
         </IconButton>
       </div>

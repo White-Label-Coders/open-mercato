@@ -21,8 +21,10 @@ export const metadata = {
   requireAuth: true,
   requireFeatures: ['voice_channels.copilot.view'],
   pageTitle: 'Call Copilot',
+  pageTitleKey: 'voice_channels.copilot.pageTitle',
   pageGroup: 'Voice Channels',
+  pageGroupKey: 'voice_channels.nav.group',
   pageOrder: 1,
   icon: copilotIcon,
-  breadcrumb: [{ label: 'Call Copilot' }],
+  breadcrumb: [{ label: 'Call Copilot', labelKey: 'voice_channels.copilot.pageTitle' }],
 }

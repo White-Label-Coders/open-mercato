@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import type { CallStartEventPayload } from '../../types'
 
 interface CallHeaderProps {
@@ -10,6 +11,7 @@ interface CallHeaderProps {
 }
 
 export function CallHeader({ callActive, callInfo, callDuration }: CallHeaderProps) {
+  const t = useT()
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -40,13 +42,15 @@ export function CallHeader({ callActive, callInfo, callDuration }: CallHeaderPro
         <div>
           <div className="text-lg font-bold text-foreground">
             {callInfo
-              ? `${callInfo.customerName ?? 'Klient'} — ${callInfo.companyName ?? ''}`
-              : 'Brak aktywnego połączenia'}
+              ? `${callInfo.customerName ?? t('voice_channels.copilot.header.customerFallback', 'Customer')}${callInfo.companyName ? ` — ${callInfo.companyName}` : ''}`
+              : t('voice_channels.copilot.header.noActiveCall', 'No active call')}
           </div>
           <div className="text-sm text-muted-foreground">
             {callInfo ? callInfo.phoneNumber : '—'}
             {callInfo &&
-              ` · ${callInfo.direction === 'outbound' ? 'Połączenie wychodzące' : 'Połączenie przychodzące'}`}
+              ` · ${callInfo.direction === 'outbound'
+                ? t('voice_channels.copilot.header.direction.outbound', 'Outbound call')
+                : t('voice_channels.copilot.header.direction.inbound', 'Inbound call')}`}
             {callInfo?.providerKey ? ` · ${callInfo.providerKey}` : ''}
             {callInfo?.providerCallId ? ` · ${callInfo.providerCallId}` : ''}
           </div>

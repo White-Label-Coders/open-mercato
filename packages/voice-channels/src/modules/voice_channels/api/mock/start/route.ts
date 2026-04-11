@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import type { EntityManager } from '@mikro-orm/core'
+import { CustomerEntity } from '@open-mercato/core/modules/customers/data/entities'
 import type { MockCallScript } from '@open-mercato/voice-channels/modules/voice_channels/types'
 import { resolveRequestContext } from '@open-mercato/shared/lib/api/context'
 
@@ -36,6 +38,47 @@ export const openApi = {
   tags: ['Voice Channels'],
 }
 
+async function resolveCustomerIdForScript(
+  em: EntityManager,
+  script: MockCallScript,
+  tenantId: string,
+  organizationId: string,
+): Promise<string | null> {
+  const directMatch = await em.findOne(CustomerEntity, {
+    id: script.customerId,
+    tenantId,
+    organizationId,
+  })
+
+  if (directMatch) {
+    return directMatch.id
+  }
+
+  const nameMatch = await em.findOne(
+    CustomerEntity,
+    {
+      tenantId,
+      organizationId,
+      kind: 'person',
+      displayName: script.customerName,
+    },
+    {
+      populate: ['personProfile', 'personProfile.company', 'personProfile.company.companyProfile'],
+    },
+  )
+
+  const companyName =
+    nameMatch?.personProfile?.company?.companyProfile?.legalName ??
+    nameMatch?.personProfile?.company?.displayName ??
+    null
+
+  if (nameMatch && companyName === script.companyName) {
+    return nameMatch.id
+  }
+
+  return null
+}
+
 export async function POST(req: Request) {
   const { ctx } = await resolveRequestContext(req)
   const parsed = startBodySchema.safeParse(await req.json())
@@ -52,16 +95,37 @@ export async function POST(req: Request) {
 
   const simulator = ctx.container.resolve<any>('mockTranscriptSimulator')
   const orchestrator = ctx.container.resolve<any>('copilotOrchestrator')
+  const em = ctx.container.resolve<EntityManager>('em').fork()
 
   try {
+    const resolvedCustomerId = await resolveCustomerIdForScript(
+      em,
+      body.script as MockCallScript,
+      tenantId,
+      organizationId,
+    )
+    const resolvedScript: MockCallScript =
+      resolvedCustomerId
+        ? {
+            ...body.script,
+            customerId: resolvedCustomerId,
+          }
+        : body.script
+
+    if (!resolvedCustomerId) {
+      console.warn(
+        `[voice_channels/mock/start] Demo customer not found for "${body.script.customerName}" (${body.script.companyName}); starting mock call without customer context`,
+      )
+    }
+
     // Emit call.started FIRST so the client initializes the workspace state
     // (callActive + activeCallId + empty suggestions) before the orchestrator
     // fires its auto-emitted customer_context suggestion. Otherwise the
     // call.started handler wipes the customer_context card via setSuggestions([]).
-    const result = await simulator.startCall(body.script, tenantId, organizationId)
+    const result = await simulator.startCall(resolvedScript, tenantId, organizationId)
     await orchestrator.startSession(
-      body.script.callId,
-      body.script.customerId,
+      resolvedScript.callId,
+      resolvedCustomerId ?? undefined,
       tenantId,
       organizationId,
     )

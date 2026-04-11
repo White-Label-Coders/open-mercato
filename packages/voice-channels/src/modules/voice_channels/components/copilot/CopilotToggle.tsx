@@ -1,5 +1,6 @@
 'use client'
 
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { Button } from '@open-mercato/ui/primitives/button'
 
 interface CopilotToggleProps {
@@ -8,6 +9,7 @@ interface CopilotToggleProps {
 }
 
 export function CopilotToggle({ enabled, onChange }: CopilotToggleProps) {
+  const t = useT()
   return (
     <Button
       type="button"
@@ -27,7 +29,9 @@ export function CopilotToggle({ enabled, onChange }: CopilotToggleProps) {
             : 'inline-block h-2 w-2 rounded-full bg-slate-400'
         }
       />
-      {enabled ? 'ON' : 'OFF'}
+      {enabled
+        ? t('voice_channels.copilot.toggle.on', 'ON')
+        : t('voice_channels.copilot.toggle.off', 'OFF')}
     </Button>
   )
 }

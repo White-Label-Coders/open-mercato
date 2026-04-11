@@ -1,5 +1,6 @@
 'use client'
 
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { DealStatusCard } from '../../../types'
 
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function DealCard({ card, onDismiss }: Props) {
+  const t = useT()
   return (
     <div
       style={{
@@ -28,8 +30,16 @@ export function DealCard({ card, onDismiss }: Props) {
           alignItems: 'center',
         }}
       >
-        <span style={{ fontSize: '13px', fontWeight: 700, color: '#155e75' }}>📊 Otwarte deale</span>
-        <IconButton type="button" variant="ghost" size="sm" onClick={onDismiss} aria-label="Dismiss deal status">
+        <span style={{ fontSize: '13px', fontWeight: 700, color: '#155e75' }}>
+          📊 {t('voice_channels.copilot.cards.dealStatus.title', 'Open deals')}
+        </span>
+        <IconButton
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onDismiss}
+          aria-label={t('voice_channels.copilot.cards.dismiss.dealStatus', 'Dismiss deal status')}
+        >
           ✕
         </IconButton>
       </div>
@@ -59,7 +69,11 @@ export function DealCard({ card, onDismiss }: Props) {
               >
                 {deal.stage}
               </span>
-              <span style={{ color: '#64748b' }}>{deal.daysInStage} dni w etapie</span>
+              <span style={{ color: '#64748b' }}>
+                {t('voice_channels.copilot.cards.dealStatus.daysInStage', '{days} days in stage', {
+                  days: deal.daysInStage,
+                })}
+              </span>
               {deal.isStalled && (
                 <span
                   style={{
@@ -68,7 +82,7 @@ export function DealCard({ card, onDismiss }: Props) {
                     animation: 'pulse 2s infinite',
                   }}
                 >
-                  ⚠ Wstrzymany
+                  ⚠ {t('voice_channels.copilot.cards.dealStatus.stalled', 'Stalled')}
                 </span>
               )}
             </div>
