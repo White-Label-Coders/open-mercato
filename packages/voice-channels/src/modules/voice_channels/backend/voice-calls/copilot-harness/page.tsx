@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef } from 'react'
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { flash } from '@open-mercato/ui/backend/FlashMessages'
 import { APP_EVENT_DOM_NAME } from '@open-mercato/ui/backend/injection/useAppEvent'
 import { Button } from '@open-mercato/ui/primitives/button'
@@ -20,6 +21,7 @@ function dispatchAppEvent(id: string, payload: Record<string, unknown>) {
 }
 
 export default function CopilotHarnessPage() {
+  const t = useT()
   const timersRef = useRef<number[]>([])
 
   const clearTimers = useCallback(() => {
@@ -106,8 +108,8 @@ export default function CopilotHarnessPage() {
       }, cumulativeDelay + 1500),
     )
 
-    flash('Demo replay started for Copilot QA harness.', 'info')
-  }, [clearTimers])
+    flash(t('voice_channels.copilot.harness.messages.started', 'Demo replay started for the Copilot QA harness.'), 'info')
+  }, [clearTimers, t])
 
   const stopReplay = useCallback(() => {
     clearTimers()
@@ -119,21 +121,24 @@ export default function CopilotHarnessPage() {
       segmentCount: 0,
       suggestionCount: 0,
     })
-    flash('Demo replay stopped.', 'info')
-  }, [clearTimers])
+    flash(t('voice_channels.copilot.harness.messages.stopped', 'Demo replay stopped.'), 'info')
+  }, [clearTimers, t])
 
   return (
     <div className="space-y-4">
       <div className="rounded-lg border bg-muted/30 p-4">
         <div className="flex flex-wrap items-center gap-3">
           <Button type="button" onClick={runReplay}>
-            Start Replay
+            {t('voice_channels.copilot.harness.startReplay', 'Start replay')}
           </Button>
           <Button type="button" variant="outline" onClick={stopReplay}>
-            Stop Replay
+            {t('voice_channels.copilot.harness.stopReplay', 'Stop replay')}
           </Button>
           <span className="text-sm text-muted-foreground">
-            QA harness only. Main Copilot UI remains event-driven and provider-agnostic.
+            {t(
+              'voice_channels.copilot.harness.notice',
+              'QA harness only. The main Copilot UI remains event-driven and provider-agnostic.',
+            )}
           </span>
         </div>
       </div>

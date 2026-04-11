@@ -1,5 +1,6 @@
 'use client'
 
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { CustomerContextCard } from '../../../types'
 
@@ -18,6 +19,7 @@ function StatBox({ label, value }: { label: string; value: string }) {
 }
 
 export function ContextCard({ card, onDismiss }: Props) {
+  const t = useT()
   const c = card.customer
 
   return (
@@ -39,8 +41,16 @@ export function ContextCard({ card, onDismiss }: Props) {
           alignItems: 'center',
         }}
       >
-        <span style={{ fontSize: '13px', fontWeight: 700, color: '#5b21b6' }}>👤 Kontekst klienta</span>
-        <IconButton type="button" variant="ghost" size="sm" onClick={onDismiss} aria-label="Dismiss customer context">
+        <span style={{ fontSize: '13px', fontWeight: 700, color: '#5b21b6' }}>
+          👤 {t('voice_channels.copilot.cards.customerContext.title', 'Customer context')}
+        </span>
+        <IconButton
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onDismiss}
+          aria-label={t('voice_channels.copilot.cards.dismiss.customerContext', 'Dismiss customer context')}
+        >
           ✕
         </IconButton>
       </div>
@@ -49,15 +59,17 @@ export function ContextCard({ card, onDismiss }: Props) {
         <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '12px' }}>{c.company}</div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-          <StatBox label="Wartość klienta (LTV)" value={`${c.lifetimeValue.toLocaleString()} ${c.currency}`} />
-          <StatBox label="Ostatnie zamówienie" value={c.lastOrderDate} />
-          <StatBox label="Liczba zamówień" value={String(c.orderCount)} />
-          <StatBox label="Śr. wartość zamówienia" value={`${c.avgOrderValue.toLocaleString()} ${c.currency}`} />
+          <StatBox label={t('voice_channels.copilot.cards.customerContext.ltv', 'Customer value (LTV)')} value={`${c.lifetimeValue.toLocaleString()} ${c.currency}`} />
+          <StatBox label={t('voice_channels.copilot.cards.customerContext.lastOrder', 'Last order')} value={c.lastOrderDate} />
+          <StatBox label={t('voice_channels.copilot.cards.customerContext.orderCount', 'Order count')} value={String(c.orderCount)} />
+          <StatBox label={t('voice_channels.copilot.cards.customerContext.averageOrderValue', 'Avg. order value')} value={`${c.avgOrderValue.toLocaleString()} ${c.currency}`} />
         </div>
 
         {c.topCategories.length > 0 && (
           <div style={{ marginTop: '8px' }}>
-            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>Top kategorie:</div>
+            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
+              {t('voice_channels.copilot.cards.customerContext.topCategories', 'Top categories:')}
+            </div>
             <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
               {c.topCategories.map((cat, i) => (
                 <span

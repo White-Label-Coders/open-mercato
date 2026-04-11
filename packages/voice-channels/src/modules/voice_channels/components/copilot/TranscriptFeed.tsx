@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useEffect } from 'react'
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import type { TranscriptSegment } from '../../types'
 
 interface TranscriptFeedProps {
@@ -8,10 +9,10 @@ interface TranscriptFeedProps {
   highlightedSegmentId?: number | null
 }
 
-const SPEAKER_STYLES: Record<string, { color: string; label: string; bg: string }> = {
-  rep: { color: '#2563eb', label: 'Handlowiec', bg: '#eff6ff' },
-  customer: { color: '#7c3aed', label: 'Klient', bg: '#f5f3ff' },
-  unknown: { color: '#6b7280', label: 'Nieznany', bg: '#f9fafb' },
+const SPEAKER_STYLES: Record<string, { color: string; labelKey: string; fallbackLabel: string; bg: string }> = {
+  rep: { color: '#2563eb', labelKey: 'voice_channels.copilot.transcript.speaker.rep', fallbackLabel: 'Sales rep', bg: '#eff6ff' },
+  customer: { color: '#7c3aed', labelKey: 'voice_channels.copilot.transcript.speaker.customer', fallbackLabel: 'Customer', bg: '#f5f3ff' },
+  unknown: { color: '#6b7280', labelKey: 'voice_channels.copilot.transcript.speaker.unknown', fallbackLabel: 'Unknown', bg: '#f9fafb' },
 }
 
 function formatTime(seconds: number): string {
@@ -21,6 +22,7 @@ function formatTime(seconds: number): string {
 }
 
 export function TranscriptFeed({ segments, highlightedSegmentId }: TranscriptFeedProps) {
+  const t = useT()
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -41,7 +43,7 @@ export function TranscriptFeed({ segments, highlightedSegmentId }: TranscriptFee
           fontSize: '15px',
         }}
       >
-        Oczekiwanie na transkrypcję...
+        {t('voice_channels.copilot.transcript.waiting', 'Waiting for transcript...')}
       </div>
     )
   }
@@ -87,7 +89,7 @@ export function TranscriptFeed({ segments, highlightedSegmentId }: TranscriptFee
                   letterSpacing: '0.5px',
                 }}
               >
-                {style.label}
+                {t(style.labelKey, style.fallbackLabel)}
               </span>
               <span style={{ fontSize: '11px', color: '#94a3b8' }}>
                 {formatTime(segment.startTime)}
