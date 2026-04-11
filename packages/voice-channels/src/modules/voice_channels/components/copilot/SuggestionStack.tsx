@@ -1,5 +1,6 @@
 'use client'
 
+import { useT } from '@open-mercato/shared/lib/i18n/context'
 import type { SuggestionCard } from '../../types'
 import { ProductCard } from './cards/ProductCard'
 import { PricingCard } from './cards/PricingCard'
@@ -30,6 +31,7 @@ function renderCard(card: SuggestionCard, onDismiss: (id: string) => void) {
 }
 
 export function SuggestionStack({ suggestions, onDismiss }: SuggestionStackProps) {
+  const t = useT()
   if (suggestions.length === 0) {
     return (
       <div
@@ -44,7 +46,10 @@ export function SuggestionStack({ suggestions, onDismiss }: SuggestionStackProps
           textAlign: 'center',
         }}
       >
-        AI Copilot nasłuchuje rozmowy i zasugeruje odpowiednie produkty, ceny i działania...
+        {t(
+          'voice_channels.copilot.suggestions.empty',
+          'AI Copilot is listening and will suggest relevant products, pricing, and actions...',
+        )}
       </div>
     )
   }

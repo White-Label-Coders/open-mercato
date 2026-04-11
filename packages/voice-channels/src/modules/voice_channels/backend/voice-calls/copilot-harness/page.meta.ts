@@ -42,8 +42,10 @@ export const metadata = {
   requireAuth: true,
   requireFeatures: ['voice_channels.mock.manage'],
   pageTitle: 'Call Copilot Harness',
+  pageTitleKey: 'voice_channels.copilot.harness.pageTitle',
   pageGroup: 'Voice Channels',
+  pageGroupKey: 'voice_channels.nav.group',
   pageOrder: 2,
   icon: harnessIcon,
-  breadcrumb: [{ label: 'Call Copilot Harness' }],
+  breadcrumb: [{ label: 'Call Copilot Harness', labelKey: 'voice_channels.copilot.harness.pageTitle' }],
 }
