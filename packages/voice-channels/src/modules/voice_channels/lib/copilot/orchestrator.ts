@@ -12,6 +12,17 @@ import type {
 } from '@open-mercato/voice-channels/modules/voice_channels/types'
 import { IntentDetector } from './intent-detector'
 import { emitVoiceEvent } from '../../events'
+import aiTools from '../../ai-tools'
+import {
+  resolveCompanyForCustomer,
+  readCompanyContext,
+  writeCompanyContext,
+  COPILOT_CONTEXT_MAX_LENGTH,
+} from './company-context'
+import type { EntityManager } from '@mikro-orm/core'
+
+const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
+  Object.fromEntries(aiTools.map((tool) => [tool.name, tool.handler as any]))
 
 /**
  * Copilot Orchestrator
@@ -34,12 +45,36 @@ interface CopilotSession {
   contextWindow: TranscriptSegment[]
   recentSuggestionTypes: Map<string, number>
   suggestionCounter: number
+  // Company memory: resolved + loaded once at startSession, refreshed at endSession.
+  companyProfileId: string | null
+  companyContext: string | null
+}
+
+// Sessions live on globalThis so that every per-request orchestrator instance
+// shares the same in-flight call state. Awilix .singleton() is only container-
+// scoped; each HTTP request creates a fresh container and a fresh orchestrator
+// whose local `sessions` Map would otherwise be empty. The result would be:
+// POST /mock/start populates session A in container A's orchestrator, then the
+// simulator's delayed setTimeout emissions land in a subscriber resolving
+// container B's orchestrator, whose sessions map is empty, so processSegment
+// early-returns and no keyword suggestions ever fire.
+const GLOBAL_SESSIONS_KEY = '__voiceChannelsCopilotSessions__'
+
+function getSharedSessions(): Map<string, CopilotSession> {
+  const store = globalThis as Record<string, unknown>
+  const existing = store[GLOBAL_SESSIONS_KEY]
+  if (existing instanceof Map) return existing as Map<string, CopilotSession>
+  const created = new Map<string, CopilotSession>()
+  store[GLOBAL_SESSIONS_KEY] = created
+  return created
 }
 
 export class CopilotOrchestrator {
   private container: AppContainer
   private intentDetector: IntentDetector
-  private sessions: Map<string, CopilotSession> = new Map()
+  private get sessions(): Map<string, CopilotSession> {
+    return getSharedSessions()
+  }
 
   /** Maximum segments to keep in context window */
   private readonly MAX_CONTEXT_SEGMENTS = 30
@@ -68,10 +103,33 @@ export class CopilotOrchestrator {
       contextWindow: [],
       recentSuggestionTypes: new Map(),
       suggestionCounter: 0,
+      companyProfileId: null,
+      companyContext: null,
     }
     this.sessions.set(callId, session)
 
-    // Auto-emit CustomerContextCard at call start
+    // Resolve linked company and load any prior Copilot context document.
+    // Best-effort: failures here must not block the call from starting.
+    if (customerId) {
+      try {
+        const em = this.container.resolve<EntityManager>('em').fork()
+        const company = await resolveCompanyForCustomer(em, customerId, {
+          tenantId,
+          organizationId,
+        })
+        if (company) {
+          session.companyProfileId = company.companyProfileId
+          session.companyContext = await readCompanyContext(em, company.companyProfileId, {
+            tenantId,
+            organizationId,
+          })
+        }
+      } catch (err) {
+        console.error('[Orchestrator] Failed to load company context:', err)
+      }
+    }
+
+    // Auto-emit CustomerContextCard at call start (now includes priorContext if loaded)
     if (customerId) {
       await this.emitCustomerContext(session, customerId)
     }
@@ -106,7 +164,7 @@ export class CopilotOrchestrator {
     // Smart-track: LLM detection (async 2–4s, always runs in parallel)
     // LLM may produce a better result that upgrades or supplements the keyword match
     this.intentDetector
-      .detectByLlm(segment, session.contextWindow)
+      .detectByLlm(segment, session.contextWindow, session.companyContext)
       .then(async (llmResult) => {
         if (llmResult) {
           // If keyword already fired same intent, emit only if LLM confidence is significantly higher
@@ -138,10 +196,118 @@ export class CopilotOrchestrator {
   }
 
   /**
-   * End a call session. Clears state for that callId.
+   * End a call session.
+   *
+   * Best-effort flow:
+   * 1. Look up the session.
+   * 2. Ask the LLM to merge prior company context with the new transcript +
+   *    detected intents into an updated memory document.
+   * 3. Persist the merged document back to the company custom field.
+   * 4. Clear the in-process session.
+   *
+   * All failures are logged but never thrown — context refresh is a side effect
+   * and must not block the call.ended event from completing.
    */
-  endSession(callId: string): void {
-    this.sessions.delete(callId)
+  async endSession(callId: string): Promise<void> {
+    const session = this.sessions.get(callId)
+    if (!session) return
+
+    try {
+      if (session.companyProfileId && session.contextWindow.length > 0) {
+        const merged = await this.mergeCompanyContext(session)
+        if (merged && merged !== session.companyContext) {
+          const em = this.container.resolve<EntityManager>('em').fork()
+          await writeCompanyContext(em, session.companyProfileId, merged, {
+            tenantId: session.tenantId,
+            organizationId: session.organizationId,
+          })
+        }
+      }
+    } catch (err) {
+      console.error('[Orchestrator] Failed to refresh company context:', err)
+    } finally {
+      this.sessions.delete(callId)
+    }
+  }
+
+  /**
+   * Ask the LLM to merge the prior company context with the just-completed call.
+   * Returns the merged plain-text document, or null when the LLM is unavailable
+   * or returns nothing useful.
+   */
+  private async mergeCompanyContext(session: CopilotSession): Promise<string | null> {
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey) {
+      console.warn('[Orchestrator] No ANTHROPIC_API_KEY — skipping company context merge')
+      return null
+    }
+
+    const prior = session.companyContext?.trim() || '(empty)'
+    const intentSummary = Array.from(session.recentSuggestionTypes.keys()).join(', ') || '(none detected)'
+    const transcriptText = session.contextWindow
+      .map((s) => `[${s.speaker}] ${s.text}`)
+      .join('\n')
+      .slice(0, 6000)
+
+    const systemPrompt = `You maintain a long-term memory document for a B2B customer relationship. You will be given:
+1. The PRIOR memory text (or "(empty)").
+2. A new call transcript (rep + customer turns).
+3. A list of intents detected during the call.
+
+Your job: produce a single updated memory document. Rules:
+- Plain text only. No markdown fences, no headers, no commentary.
+- Stay under ${COPILOT_CONTEXT_MAX_LENGTH} characters total.
+- Preserve durable facts from the PRIOR memory (people, decisions, ongoing deals, pain points) unless the new call clearly invalidates them.
+- Add NEW durable facts learned in this call: pain points, commitments, products discussed, competitor mentions, follow-ups owed, names introduced.
+- Do NOT include greetings, weather, small talk, or per-call conversational filler.
+- Write in the language of the transcript (Polish if Polish, English if English).
+- When the new call adds nothing durable, return the PRIOR memory unchanged.`
+
+    const userPrompt = `PRIOR MEMORY:
+${prior}
+
+INTENTS DETECTED THIS CALL:
+${intentSummary}
+
+TRANSCRIPT:
+${transcriptText}
+
+Return only the updated memory document.`
+
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 800,
+          temperature: 0.2,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        }),
+      })
+
+      if (!response.ok) {
+        console.error('[Orchestrator] Context merge API error:', response.status)
+        return null
+      }
+
+      const data = await response.json()
+      const text = data.content?.[0]?.text
+      if (typeof text !== 'string') return null
+
+      // Strip optional markdown fences the model may emit despite instructions.
+      const stripped = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
+      if (stripped.length === 0) return null
+      return stripped
+    } catch (err) {
+      console.error('[Orchestrator] Context merge failed:', err)
+      return null
+    }
   }
 
   /**
@@ -314,52 +480,39 @@ export class CopilotOrchestrator {
       detectedIntent: 'Automatyczny kontekst klienta',
       createdAt: Date.now(),
       customer: toolResult.customer,
+      priorContext: session.companyContext,
     }
 
     await this.emitSuggestion(session, card)
   }
 
   /**
-   * Call an MCP tool by name. Resolves the tool from the AI assistant registry.
-   * For hackathon: falls back to direct DI resolution if MCP registry unavailable.
+   * Call a voice-channels AI tool by name. Tools are imported directly from
+   * `ai-tools.ts` so the orchestrator does not depend on the MCP runtime
+   * registry (which is only loaded inside the MCP server process).
    */
-  private async callMcpTool<T>(toolName: string, input: Record<string, unknown>, session: CopilotSession): Promise<T | null> {
-    try {
-      // Try resolving tool handler from DI container
-      const handler = this.container.resolve<((input: any, ctx: any) => Promise<T>) | undefined>(
-        `mcpTool:${toolName}`
-      )
-      if (handler) {
-        return await handler(input, {
-          tenantId: session.tenantId,
-          organizationId: session.organizationId,
-          userId: null,
-          container: this.container,
-          userFeatures: [],
-          isSuperAdmin: true,
-        })
-      }
-
-      // Fallback: try global tool registry
-      const toolRegistry = this.container.resolve<any>('mcpToolRegistry')
-      if (toolRegistry?.getTool) {
-        const tool = toolRegistry.getTool(toolName)
-        if (tool?.handler) {
-          return await tool.handler(input, {
-            tenantId: session.tenantId,
-            organizationId: session.organizationId,
-            userId: null,
-            container: this.container,
-            userFeatures: [],
-            isSuperAdmin: true,
-          })
-        }
-      }
-
-      console.warn(`[Orchestrator] MCP tool "${toolName}" not found`)
+  private async callMcpTool<T>(
+    toolName: string,
+    input: Record<string, unknown>,
+    session: CopilotSession,
+  ): Promise<T | null> {
+    const handler = toolHandlers[toolName]
+    if (!handler) {
+      console.warn(`[Orchestrator] Voice-channels AI tool "${toolName}" not found`)
       return null
+    }
+    try {
+      const result = await handler(input, {
+        tenantId: session.tenantId,
+        organizationId: session.organizationId,
+        userId: null,
+        container: this.container,
+        userFeatures: ['voice_channels.copilot.view'],
+        isSuperAdmin: true,
+      })
+      return result as T
     } catch (err) {
-      console.error(`[Orchestrator] MCP tool "${toolName}" error:`, err)
+      console.error(`[Orchestrator] AI tool "${toolName}" error:`, err)
       return null
     }
   }

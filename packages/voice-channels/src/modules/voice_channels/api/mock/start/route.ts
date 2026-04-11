@@ -5,12 +5,25 @@ import { resolveRequestContext } from '@open-mercato/shared/lib/api/context'
 const startBodySchema = z.object({
   script: z.object({
     callId: z.string().min(1),
+    phoneNumber: z.string().min(1),
+    direction: z.enum(['inbound', 'outbound']),
     customerId: z.string().min(1),
-    segments: z.array(z.object({
-      speaker: z.enum(['customer', 'agent']),
-      text: z.string(),
-      delayMs: z.number().int().nonnegative(),
-    })).min(1),
+    customerName: z.string().min(1),
+    companyName: z.string().min(1),
+    language: z.string().min(1),
+    segments: z
+      .array(
+        z
+          .object({
+            segmentId: z.number().int().nonnegative(),
+            speaker: z.enum(['rep', 'customer']),
+            text: z.string().min(1),
+            delayMs: z.number().int().nonnegative(),
+            expectedIntent: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .min(1),
   }),
 })
 
@@ -24,25 +37,40 @@ export const openApi = {
 }
 
 export async function POST(req: Request) {
-  const ctx = resolveRequestContext(req)
+  const { ctx } = await resolveRequestContext(req)
   const parsed = startBodySchema.safeParse(await req.json())
   if (!parsed.success) {
     return Response.json({ error: 'Invalid request body', details: parsed.error.flatten() }, { status: 400 })
   }
   const body = parsed.data
 
+  const tenantId = ctx.auth?.tenantId
+  const organizationId = ctx.auth?.orgId
+  if (!tenantId || !organizationId) {
+    return Response.json({ error: 'Missing tenant/organization scope' }, { status: 401 })
+  }
+
   const simulator = ctx.container.resolve<any>('mockTranscriptSimulator')
   const orchestrator = ctx.container.resolve<any>('copilotOrchestrator')
 
-  // Start orchestrator session (subscriber auto-wires segments → orchestrator via event bus)
-  await orchestrator.startSession(
-    body.script.callId,
-    body.script.customerId,
-    ctx.tenantId!,
-    ctx.organizationId!
-  )
-
-  const result = await simulator.startCall(body.script, ctx.tenantId!, ctx.organizationId!)
-
-  return Response.json(result)
+  try {
+    // Emit call.started FIRST so the client initializes the workspace state
+    // (callActive + activeCallId + empty suggestions) before the orchestrator
+    // fires its auto-emitted customer_context suggestion. Otherwise the
+    // call.started handler wipes the customer_context card via setSuggestions([]).
+    const result = await simulator.startCall(body.script, tenantId, organizationId)
+    await orchestrator.startSession(
+      body.script.callId,
+      body.script.customerId,
+      tenantId,
+      organizationId,
+    )
+    return Response.json(result)
+  } catch (err) {
+    console.error('[voice_channels/mock/start] start failed', err)
+    return Response.json(
+      { error: err instanceof Error ? err.message : 'Failed to start mock call' },
+      { status: 500 },
+    )
+  }
 }

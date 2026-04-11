@@ -130,7 +130,6 @@ async function broadcastEventToConnections(eventName: string, payload: Record<st
 
   for (const conn of connections) {
     if (!matchesAudience(conn, audience)) continue
-
     try {
       conn.send(ssePayload)
     } catch {

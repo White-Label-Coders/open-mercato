@@ -22,6 +22,7 @@ const EXCLUDED_EVENT_PREFIXES = [
   'workflows.', // Workflow internal events (avoid recursion)
   'cache.', // Cache events
   'queue.', // Queue events
+  'voice_channels.', // High-frequency realtime call/copilot events — never drive workflows
 ]
 
 /**

@@ -1,77 +1,28 @@
-import type { MockCallScript } from '../../types'
+import type { MockCallScript, MockScriptSegment } from '../../types'
+import rawScript from './demo-1-acme-steel.json'
+
+type RawSegment = (typeof rawScript)['segments'][number]
+
+function normalizeSegment(raw: RawSegment): MockScriptSegment {
+  return {
+    segmentId: raw.segmentId,
+    speaker: raw.speaker as MockScriptSegment['speaker'],
+    text: raw.text,
+    delayMs: raw.delayMs,
+    expectedIntent:
+      'expectedIntent' in raw && typeof raw.expectedIntent === 'string'
+        ? (raw.expectedIntent as MockScriptSegment['expectedIntent'])
+        : undefined,
+  }
+}
 
 export const DEMO_1_ACME_STEEL: MockCallScript = {
-  callId: 'demo-call-acme-steel-001',
-  phoneNumber: '+48 22 555 01 23',
-  direction: 'inbound',
-  customerId: 'cust-acme-steel',
-  customerName: 'Marek Nowakowski',
-  companyName: 'ACME Steel Sp. z o.o.',
-  language: 'pl-PL',
-  segments: [
-    {
-      segmentId: 1,
-      speaker: 'rep',
-      text: 'Dzień dobry, Open Mercato — Anna Kowalska, w czym mogę pomóc?',
-      delayMs: 1200,
-    },
-    {
-      segmentId: 2,
-      speaker: 'customer',
-      text: 'Dzień dobry, Marek Nowakowski z ACME Steel. Dzwonię w sprawie pilnego zamówienia.',
-      delayMs: 2800,
-    },
-    {
-      segmentId: 3,
-      speaker: 'rep',
-      text: 'Oczywiście Panie Marku, już patrzę na Państwa konto. Słucham.',
-      delayMs: 2400,
-    },
-    {
-      segmentId: 4,
-      speaker: 'customer',
-      text: 'Potrzebujemy pilnie 200 sztuk profili stalowych 80x80, mamy budowę która stoi.',
-      delayMs: 3600,
-      expectedIntent: 'product_need',
-    },
-    {
-      segmentId: 5,
-      speaker: 'rep',
-      text: 'Rozumiem, sprawdzam dostępność w magazynie.',
-      delayMs: 2600,
-    },
-    {
-      segmentId: 6,
-      speaker: 'customer',
-      text: 'Tylko szczerze mówiąc, ostatnio dostaliśmy lepszą ofertę od konkurencji — musicie zejść z ceną.',
-      delayMs: 4200,
-      expectedIntent: 'price_objection',
-    },
-    {
-      segmentId: 7,
-      speaker: 'rep',
-      text: 'Proszę chwilę, sprawdzę co mogę dla Państwa zrobić.',
-      delayMs: 2400,
-    },
-    {
-      segmentId: 8,
-      speaker: 'customer',
-      text: 'A przy okazji — jak wygląda nasza ostatnia reklamacja? Miała być odpowiedź do wczoraj.',
-      delayMs: 4000,
-      expectedIntent: 'complaint',
-    },
-    {
-      segmentId: 9,
-      speaker: 'rep',
-      text: 'Już sprawdzam status reklamacji w systemie.',
-      delayMs: 2200,
-    },
-    {
-      segmentId: 10,
-      speaker: 'customer',
-      text: 'Dobra, jeśli damy radę z ceną i dostawą na jutro — bierzemy od razu 200 sztuk i dołożymy zamówienie na blachy.',
-      delayMs: 4600,
-      expectedIntent: 'order_intent',
-    },
-  ],
+  callId: rawScript.callId,
+  phoneNumber: rawScript.phoneNumber,
+  direction: rawScript.direction as MockCallScript['direction'],
+  customerId: rawScript.customerId,
+  customerName: rawScript.customerName,
+  companyName: rawScript.companyName,
+  language: rawScript.language,
+  segments: rawScript.segments.map(normalizeSegment),
 }

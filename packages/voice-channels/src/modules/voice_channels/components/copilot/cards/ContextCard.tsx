@@ -91,6 +91,41 @@ export function ContextCard({ card, onDismiss }: Props) {
             📝 {c.notes}
           </div>
         )}
+
+        {card.priorContext && (
+          <div
+            style={{
+              marginTop: '8px',
+              padding: '8px 10px',
+              backgroundColor: '#eef2ff',
+              borderRadius: '6px',
+              borderLeft: '3px solid #6366f1',
+            }}
+          >
+            <div
+              style={{
+                fontSize: '10px',
+                fontWeight: 700,
+                color: '#4338ca',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+                marginBottom: '4px',
+              }}
+            >
+              🧠 Pamięć Copilota
+            </div>
+            <div
+              style={{
+                fontSize: '12px',
+                color: '#312e81',
+                lineHeight: 1.5,
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {card.priorContext}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

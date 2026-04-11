@@ -110,6 +110,12 @@ export interface CustomerContextCard extends SuggestionCardBase {
     assignedRep: string
     notes: string
   }
+  /**
+   * Free-text Copilot memory document for the company, written by previous calls.
+   * `null` when no prior context exists yet.
+   * @see packages/voice-channels/src/modules/voice_channels/lib/copilot/company-context.ts
+   */
+  priorContext?: string | null
 }
 
 export interface DealStatusCard extends SuggestionCardBase {

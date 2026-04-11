@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { resolveRequestContext } from '@open-mercato/shared/lib/api/context'
 import { setCacheEnabled, isCacheEnabled } from '../../../lib/copilot/response-cache'
 
 const cacheBodySchema = z.object({
@@ -16,7 +15,6 @@ export const openApi = {
 }
 
 export async function POST(req: Request) {
-  const ctx = resolveRequestContext(req)
   const parsed = cacheBodySchema.safeParse(await req.json())
   if (!parsed.success) {
     return Response.json({ error: 'Invalid request body', details: parsed.error.flatten() }, { status: 400 })

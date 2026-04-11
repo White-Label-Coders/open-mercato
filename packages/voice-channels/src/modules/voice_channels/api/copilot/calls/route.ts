@@ -10,7 +10,7 @@ export const openApi = {
 }
 
 export async function GET(req: Request) {
-  const ctx = resolveRequestContext(req)
+  const { ctx } = await resolveRequestContext(req)
   const orchestrator = ctx.container.resolve<any>('copilotOrchestrator')
 
   const activeSessions = orchestrator.getActiveSessions()

@@ -15,7 +15,7 @@ export const openApi = {
 }
 
 export async function POST(req: Request) {
-  const ctx = resolveRequestContext(req)
+  const { ctx } = await resolveRequestContext(req)
   const parsed = stopBodySchema.safeParse(await req.json())
   if (!parsed.success) {
     return Response.json({ error: 'Invalid request body', details: parsed.error.flatten() }, { status: 400 })
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   const orchestrator = ctx.container.resolve<any>('copilotOrchestrator')
 
   simulator.stopCall()
-  orchestrator.endSession(body.callId)
+  await orchestrator.endSession(body.callId)
 
   return Response.json({ stopped: true })
 }

@@ -85,7 +85,8 @@ export class IntentDetector {
    */
   async detectByLlm(
     segment: TranscriptSegment,
-    contextSegments: TranscriptSegment[]
+    contextSegments: TranscriptSegment[],
+    priorContext?: string | null,
   ): Promise<IntentDetectionResult | null> {
     if (segment.speaker !== 'customer') return null
 
@@ -95,10 +96,13 @@ export class IntentDetector {
       .map(s => `[${s.speaker}] ${s.text}`)
       .join('\n')
 
+    const priorContextBlock = priorContext && priorContext.trim().length > 0
+      ? `\n\nPRIOR CONTEXT WITH THIS CUSTOMER (from previous calls):\n${priorContext.trim()}\n`
+      : ''
+
     const systemPrompt = `You are an intent classifier for a B2B sales call copilot.
 Analyze the LATEST customer message in the context of the conversation.
-Classify into exactly ONE intent.
-
+Classify into exactly ONE intent.${priorContextBlock}
 Intents:
 - product_need: Customer expresses need for a product or asks about availability/specifications
 - price_objection: Customer objects to pricing, asks for discount, mentions budget constraints
@@ -108,7 +112,8 @@ Intents:
 - complaint: Customer mentions past issues, quality problems, or delivery delays
 - small_talk: Greetings, weather, personal topics — not business-related
 
-Respond with JSON only: { "intent": "<intent>", "confidence": <0.0-1.0>, "keywords": ["<key phrases>"] }`
+Respond with a raw JSON object only — no markdown fences, no commentary, no prose. Format:
+{ "intent": "<intent>", "confidence": <0.0-1.0>, "keywords": ["<key phrases>"] }`
 
     const userPrompt = `Conversation context:
 ${conversationContext}
@@ -168,8 +173,14 @@ LATEST customer message to classify:
     const text = data.content?.[0]?.text
     if (!text) return null
 
+    const jsonText = extractJsonObject(text)
+    if (!jsonText) {
+      console.error('[IntentDetector] No JSON object in LLM response:', text)
+      return null
+    }
+
     try {
-      const parsed = JSON.parse(text)
+      const parsed = JSON.parse(jsonText)
       if (parsed.intent && typeof parsed.confidence === 'number') {
         return {
           intent: parsed.intent as CopilotIntent,
@@ -182,4 +193,30 @@ LATEST customer message to classify:
     }
     return null
   }
+}
+
+/**
+ * Extract a JSON object from a model response. Handles three shapes:
+ *   1. Plain JSON: `{...}`
+ *   2. Markdown-fenced JSON: ` ```json\n{...}\n``` ` or ` ```\n{...}\n``` `
+ *   3. Prose-wrapped JSON: anywhere in a longer reply
+ *
+ * Returns the JSON substring (still needing JSON.parse) or null if none found.
+ */
+function extractJsonObject(text: string): string | null {
+  const trimmed = text.trim()
+
+  // Markdown fence stripping (```json ... ``` or ``` ... ```)
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i)
+  if (fenceMatch) return fenceMatch[1].trim()
+
+  // Already a bare JSON object
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed
+
+  // Fallback: first `{...}` substring (greedy to last `}`)
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start !== -1 && end > start) return trimmed.slice(start, end + 1)
+
+  return null
 }

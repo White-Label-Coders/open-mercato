@@ -62,18 +62,37 @@ export function getGlobalEventBus(): GlobalEventBus | null {
 // Event Registry for Validation
 // =============================================================================
 
-// Global set of all declared event IDs for runtime validation
-const allDeclaredEventIds = new Set<string>()
+// Registry lives on globalThis so that module instances split across bundle
+// units (Next.js / webpack / monorepo workspaces) all read and write the same
+// table — otherwise `isBroadcastEvent` would silently return false for events
+// declared in a different module graph, and SSE broadcasts would drop.
+const GLOBAL_DECLARED_EVENT_IDS_KEY = '__openMercatoDeclaredEventIds__'
+const GLOBAL_DECLARED_EVENTS_KEY = '__openMercatoDeclaredEvents__'
 
-// Global registry of all declared events with their full definitions
-const allDeclaredEvents: EventDefinition[] = []
+function getAllDeclaredEventIdsSet(): Set<string> {
+  const store = globalThis as Record<string, unknown>
+  const existing = store[GLOBAL_DECLARED_EVENT_IDS_KEY]
+  if (existing instanceof Set) return existing as Set<string>
+  const created = new Set<string>()
+  store[GLOBAL_DECLARED_EVENT_IDS_KEY] = created
+  return created
+}
+
+function getAllDeclaredEventsArray(): EventDefinition[] {
+  const store = globalThis as Record<string, unknown>
+  const existing = store[GLOBAL_DECLARED_EVENTS_KEY]
+  if (Array.isArray(existing)) return existing as EventDefinition[]
+  const created: EventDefinition[] = []
+  store[GLOBAL_DECLARED_EVENTS_KEY] = created
+  return created
+}
 
 /**
  * Check if an event ID has been declared by any module.
  * Used for runtime validation to ensure only declared events are emitted.
  */
 export function isEventDeclared(eventId: string): boolean {
-  return allDeclaredEventIds.has(eventId)
+  return getAllDeclaredEventIdsSet().has(eventId)
 }
 
 /**
@@ -81,7 +100,7 @@ export function isEventDeclared(eventId: string): boolean {
  * Useful for debugging and introspection.
  */
 export function getAllDeclaredEventIds(): string[] {
-  return Array.from(allDeclaredEventIds)
+  return Array.from(getAllDeclaredEventIdsSet())
 }
 
 /**
@@ -89,7 +108,7 @@ export function getAllDeclaredEventIds(): string[] {
  * Used by the API to return available events for workflow triggers.
  */
 export function getDeclaredEvents(): EventDefinition[] {
-  return [...allDeclaredEvents]
+  return [...getAllDeclaredEventsArray()]
 }
 
 /**
@@ -97,7 +116,7 @@ export function getDeclaredEvents(): EventDefinition[] {
  * Used by the SSE endpoint to filter events for the DOM Event Bridge.
  */
 export function isBroadcastEvent(eventId: string): boolean {
-  const event = allDeclaredEvents.find(e => e.id === eventId)
+  const event = getAllDeclaredEventsArray().find(e => e.id === eventId)
   return event?.clientBroadcast === true
 }
 
@@ -106,7 +125,7 @@ export function isBroadcastEvent(eventId: string): boolean {
  * Used by the portal SSE endpoint to filter events for the Portal Event Bridge.
  */
 export function isPortalBroadcastEvent(eventId: string): boolean {
-  const event = allDeclaredEvents.find(e => e.id === eventId)
+  const event = getAllDeclaredEventsArray().find(e => e.id === eventId)
   return event?.portalBroadcast === true
 }
 
@@ -190,13 +209,15 @@ export function createModuleEvents<
   }))
 
   // Register all event IDs and definitions in the global registry
+  const declaredIds = getAllDeclaredEventIdsSet()
+  const declaredEvents = getAllDeclaredEventsArray()
   for (const eventId of validEventIds) {
-    allDeclaredEventIds.add(eventId)
+    declaredIds.add(eventId)
   }
   for (const event of fullEvents) {
     // Avoid duplicates if createModuleEvents is called multiple times (e.g., HMR)
-    if (!allDeclaredEvents.find(e => e.id === event.id)) {
-      allDeclaredEvents.push(event)
+    if (!declaredEvents.find(e => e.id === event.id)) {
+      declaredEvents.push(event)
     }
   }
 

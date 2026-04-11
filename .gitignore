@@ -123,3 +123,4 @@ docker/opencode/opencode.jsonc
 .ai/dev-ephemeral-envs.json
 .agents/
 .ai/.hackathon
+/packages/ai-assistant/data/cache.db

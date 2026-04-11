@@ -6,8 +6,8 @@ import path from 'node:path'
 import { seedDemoData } from './data/seed/demo-seed'
 
 const DEMO_SCRIPT_PATH = path.resolve(
-    __dirname,
-    'data/demo-scripts/demo-1-acme-steel.json',
+    process.cwd(),
+    'packages/voice-channels/src/modules/voice_channels/data/demo-scripts/demo-1-acme-steel.json',
 )
 const CUSTOMER_ID_PLACEHOLDER = 'ACME_CUSTOMER_ID'
 
