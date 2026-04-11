@@ -261,6 +261,7 @@ export async function GET(request: Request): Promise<Response> {
             entityId: query.entityId,
             includeDeleted: true,
             source: CUSTOMER_INTERACTION_TODO_ADAPTER_SOURCE,
+            sourcePrefix: 'voice_channels.copilot:',
           },
         ),
       ]).then(([legacyRows, canonicalRows]) => [

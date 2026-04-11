@@ -46,15 +46,14 @@ function resolveTargetEntityIds(prefill: Record<string, unknown>): string[] {
   return fallbackEntityId ? [fallbackEntityId] : []
 }
 
-type TodoCreateResult = {
+type InteractionCreateResult = {
   id?: string | null
-  todoId?: string | null
-  linkId?: string | null
+  interactionId?: string | null
 }
 
 async function rollbackInteractions(interactionIds: string[]): Promise<void> {
   for (const interactionId of [...interactionIds].reverse()) {
-    const rollback = await apiCall(`/api/customers/todos?id=${encodeURIComponent(interactionId)}`, {
+    const rollback = await apiCall(`/api/customers/interactions?id=${encodeURIComponent(interactionId)}`, {
       method: 'DELETE',
     })
     if (!rollback.ok) {
@@ -122,36 +121,36 @@ export function FollowUpDialog({ open, onOpenChange, prefill, onSuccess }: Props
 
           try {
             for (const entityId of targetEntityIds) {
-              const response = await apiCall<TodoCreateResult>('/api/customers/todos', {
+              const response = await apiCall<InteractionCreateResult>('/api/customers/interactions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   entityId,
+                  interactionType: 'task',
                   title:
                     title.trim() ||
                     t('voice_channels.copilot.followUp.defaultTitle', 'Follow-up after call'),
-                  isDone: false,
-                  createdByUserId: ownerUserId,
-                  todoCustom: {
-                    description: description.trim() || null,
-                    due_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
-                  },
+                  body: description.trim() || null,
+                  status: 'planned',
+                  scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+                  ownerUserId,
+                  appearanceIcon: 'lucide:calendar-check',
                   source: callSource,
                 }),
               })
 
-              const createdTodoId =
-                typeof response.result?.todoId === 'string'
-                  ? response.result.todoId
+              const createdInteractionId =
+                typeof response.result?.interactionId === 'string'
+                  ? response.result.interactionId
                   : typeof response.result?.id === 'string'
                     ? response.result.id
                     : null
 
-              if (!response.ok || !createdTodoId) {
+              if (!response.ok || !createdInteractionId) {
                 throw new Error('interaction-create-failed')
               }
 
-              createdInteractionIds.push(createdTodoId)
+              createdInteractionIds.push(createdInteractionId)
             }
           } catch (error) {
             if (createdInteractionIds.length > 0) {

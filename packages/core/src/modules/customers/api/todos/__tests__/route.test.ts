@@ -225,6 +225,21 @@ describe('customers todos adapter route', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('Deprecation')).toBe('true')
 
+    const { listCanonicalTodoRows } = jest.requireMock('../../../lib/todoCompatibility')
+    expect(listCanonicalTodoRows).toHaveBeenCalledWith(
+      mockEm,
+      mockContainer,
+      mockContext.auth,
+      ORG_ID,
+      [ORG_ID],
+      expect.objectContaining({
+        entityId: ENTITY_ID,
+        includeDeleted: true,
+        source: 'adapter:todo',
+        sourcePrefix: 'voice_channels.copilot:',
+      }),
+    )
+
     const body = await res.json()
     expect(body.items).toHaveLength(1)
     expect(body.items[0]).toMatchObject({

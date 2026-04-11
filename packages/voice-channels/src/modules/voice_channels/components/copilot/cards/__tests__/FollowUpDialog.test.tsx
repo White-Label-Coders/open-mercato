@@ -32,7 +32,7 @@ describe('FollowUpDialog', () => {
     apiCallMock.mockResolvedValue({
       ok: true,
       status: 201,
-      result: { todoId: 'interaction-1', linkId: 'interaction-1' },
+      result: { interactionId: 'interaction-1', id: 'interaction-1' },
       response: { ok: true, status: 201 } as Response,
       cacheStatus: null,
     } as Awaited<ReturnType<typeof apiCall>>)
@@ -67,36 +67,36 @@ describe('FollowUpDialog', () => {
       expect(apiCallMock).toHaveBeenCalledTimes(2)
       expect(apiCallMock).toHaveBeenNthCalledWith(
         1,
-        '/api/customers/todos',
+        '/api/customers/interactions',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({
             entityId: 'person-1',
+            interactionType: 'task',
             title: 'Follow-up',
-            isDone: false,
-            createdByUserId: 'rep-1',
-            todoCustom: {
-              description: 'Call back tomorrow',
-              due_at: expectedScheduledAt,
-            },
+            body: 'Call back tomorrow',
+            status: 'planned',
+            scheduledAt: expectedScheduledAt,
+            ownerUserId: 'rep-1',
+            appearanceIcon: 'lucide:calendar-check',
             source: 'voice_channels.copilot:call-1',
           }),
         }),
       )
       expect(apiCallMock).toHaveBeenNthCalledWith(
         2,
-        '/api/customers/todos',
+        '/api/customers/interactions',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({
             entityId: 'company-1',
+            interactionType: 'task',
             title: 'Follow-up',
-            isDone: false,
-            createdByUserId: 'rep-1',
-            todoCustom: {
-              description: 'Call back tomorrow',
-              due_at: expectedScheduledAt,
-            },
+            body: 'Call back tomorrow',
+            status: 'planned',
+            scheduledAt: expectedScheduledAt,
+            ownerUserId: 'rep-1',
+            appearanceIcon: 'lucide:calendar-check',
             source: 'voice_channels.copilot:call-1',
           }),
         }),
