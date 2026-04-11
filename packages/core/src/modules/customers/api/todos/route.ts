@@ -134,6 +134,16 @@ function collectTodoCustomValues(
   return Object.keys(direct).length > 0 ? direct : undefined
 }
 
+function resolveTodoAdapterSource(body: Record<string, unknown>): string {
+  if (typeof body.source === 'string') {
+    const trimmed = body.source.trim()
+    if (trimmed.startsWith('voice_channels.copilot:')) {
+      return trimmed.slice(0, 100)
+    }
+  }
+  return CUSTOMER_INTERACTION_TODO_ADAPTER_SOURCE
+}
+
 async function findLegacyTodoLink(
   em: EntityManager,
   target: { linkId?: string; todoId?: string },
@@ -311,6 +321,7 @@ export async function POST(request: Request): Promise<Response> {
       return withAdapterHeaders(NextResponse.json(guardResult.body, { status: guardResult.status }))
     }
     const customValues = collectTodoCustomValues(body as Record<string, unknown>)
+    const source = resolveTodoAdapterSource(body as Record<string, unknown>)
 
     const { result } = await commandBus.execute('customers.interactions.create', {
       input: {
@@ -318,7 +329,7 @@ export async function POST(request: Request): Promise<Response> {
         interactionType: 'task',
         title: body.title,
         status: body.is_done === true || body.isDone === true ? 'done' : 'planned',
-        source: CUSTOMER_INTERACTION_TODO_ADAPTER_SOURCE,
+        source,
         ...(customValues ? {
           customValues,
           priority: typeof customValues.priority === 'number' ? customValues.priority : null,

@@ -305,6 +305,31 @@ describe('customers todos adapter route', () => {
     )
   })
 
+  it('preserves copilot source when creating adapter-backed follow-up tasks', async () => {
+    mockCommandBus.execute.mockResolvedValueOnce({ interactionId: TODO_ID })
+
+    await POST(
+      new Request('http://localhost/api/customers/todos', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          entityId: ENTITY_ID,
+          title: 'Create copilot follow-up',
+          source: 'voice_channels.copilot:call-123',
+        }),
+      }),
+    )
+
+    expect(mockCommandBus.execute).toHaveBeenCalledWith(
+      'customers.interactions.create',
+      expect.objectContaining({
+        input: expect.objectContaining({
+          source: 'voice_channels.copilot:call-123',
+        }),
+      }),
+    )
+  })
+
   it('bridges legacy link deletion through canonical interactions when unified mode is off', async () => {
     const legacyLink = {
       id: LINK_ID,

@@ -1,7 +1,7 @@
 'use client'
 
 import { useT } from '@open-mercato/shared/lib/i18n/context'
-import type { SuggestionCard } from '../../types'
+import type { SuggestionCard, TranscriptSegment } from '../../types'
 import { ProductCard } from './cards/ProductCard'
 import { PricingCard } from './cards/PricingCard'
 import { ContextCard } from './cards/ContextCard'
@@ -10,10 +10,11 @@ import { ActionCard } from './cards/ActionCard'
 
 interface SuggestionStackProps {
   suggestions: SuggestionCard[]
+  segments: TranscriptSegment[]
   onDismiss: (id: string) => void
 }
 
-function renderCard(card: SuggestionCard, onDismiss: (id: string) => void) {
+function renderCard(card: SuggestionCard, segments: TranscriptSegment[], onDismiss: (id: string) => void) {
   switch (card.type) {
     case 'product_suggestion':
       return <ProductCard card={card} onDismiss={() => onDismiss(card.id)} />
@@ -24,13 +25,13 @@ function renderCard(card: SuggestionCard, onDismiss: (id: string) => void) {
     case 'deal_status':
       return <DealCard card={card} onDismiss={() => onDismiss(card.id)} />
     case 'quick_action':
-      return <ActionCard card={card} onDismiss={() => onDismiss(card.id)} />
+      return <ActionCard card={card} segments={segments} onDismiss={() => onDismiss(card.id)} />
     default:
       return null
   }
 }
 
-export function SuggestionStack({ suggestions, onDismiss }: SuggestionStackProps) {
+export function SuggestionStack({ suggestions, segments, onDismiss }: SuggestionStackProps) {
   const t = useT()
   if (suggestions.length === 0) {
     return (
@@ -64,7 +65,7 @@ export function SuggestionStack({ suggestions, onDismiss }: SuggestionStackProps
             animation: 'slideIn 0.4s ease-out',
           }}
         >
-          {renderCard(suggestion, onDismiss)}
+          {renderCard(suggestion, segments, onDismiss)}
         </div>
       ))}
     </div>
