@@ -373,6 +373,7 @@ Return only the updated memory document.`
       keywords,
       customerId: session.customerId,
       limit: 3,
+      context: triggerText,
     }, session)
 
     if (!toolResult || toolResult.products.length === 0) return null

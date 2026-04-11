@@ -25,6 +25,7 @@ type ProductSearchInput = {
   keywords: string[]
   customerId?: string
   limit?: number
+  context?: string
 }
 
 type CustomerContextInput = {
@@ -103,21 +104,165 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function normalizeSearchText(value: string): string {
+  return value
+    .toLocaleLowerCase('pl-PL')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
 }
 
-function buildKeywordPattern(keywords: string[]): string {
-  const tokens = keywords
-    .map((keyword) => keyword.trim())
-    .filter((keyword) => keyword.length > 0)
-    .map(escapeRegex)
+function tokenizeSearchText(value: string): string[] {
+  return normalizeSearchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 2)
+}
 
-  if (!tokens.length) {
-    return '(?!)'
+const SEARCH_STEM_SUFFIXES = [
+  'owych',
+  'owego',
+  'owej',
+  'owym',
+  'owymi',
+  'ami',
+  'ach',
+  'ego',
+  'owa',
+  'owe',
+  'owy',
+  'ych',
+  'cie',
+  'cia',
+  'cji',
+  'cja',
+  'ow',
+  'ów',
+  'om',
+  'ie',
+  'y',
+  'i',
+  'e',
+  'a',
+] as const
+
+const SEARCH_SYNONYM_GROUPS = [
+  ['rura', 'rury', 'rur', 'pipe', 'pipes'],
+  ['stal', 'stalowa', 'stalowe', 'stalowych', 'steel'],
+  ['zawor', 'zawory', 'zaworow', 'valve', 'valves'],
+  ['kulowy', 'kulowych', 'ball'],
+  ['ksztaltka', 'ksztaltki', 'ksztaltek', 'fitting', 'fittings'],
+] as const
+
+function collectSearchTermVariants(term: string): string[] {
+  const variants = new Set<string>()
+  if (term.length < 2) {
+    return []
   }
 
-  return `(?i)(${tokens.join('|')})`
+  variants.add(term)
+
+  for (const suffix of SEARCH_STEM_SUFFIXES) {
+    if (term.length > suffix.length + 2 && term.endsWith(suffix)) {
+      variants.add(term.slice(0, -suffix.length))
+    }
+  }
+
+  for (const group of SEARCH_SYNONYM_GROUPS) {
+    if (group.some((candidate) => term.includes(candidate))) {
+      for (const candidate of group) {
+        variants.add(candidate)
+      }
+    }
+  }
+
+  return Array.from(variants).filter((variant) => variant.length >= 2)
+}
+
+function buildProductSearchTerms(keywords: string[], context?: string): string[] {
+  const terms = new Set<string>()
+  const sources = [...keywords, context ?? '']
+
+  for (const source of sources) {
+    for (const token of tokenizeSearchText(source)) {
+      for (const variant of collectSearchTermVariants(token)) {
+        terms.add(variant)
+      }
+    }
+  }
+
+  if (context) {
+    const dnMatches = context.match(/dn\s*\d+/gi) ?? []
+    const pnMatches = context.match(/pn\s*\d+/gi) ?? []
+
+    for (const match of [...dnMatches, ...pnMatches]) {
+      terms.add(match.replace(/\s+/g, '').toLocaleLowerCase('pl-PL'))
+    }
+  }
+
+  return Array.from(terms)
+}
+
+function scoreProductMatch(product: CatalogProduct, searchTerms: string[]): number {
+  if (!searchTerms.length) {
+    return 0
+  }
+
+  const title = normalizeSearchText(product.title)
+  const sku = normalizeSearchText(readString(product.sku) ?? '')
+  const description = normalizeSearchText(readString(product.description) ?? '')
+  const category = normalizeSearchText(readProductCategory(product))
+  const haystack = `${title} ${sku} ${description} ${category}`.trim()
+
+  let score = 0
+
+  for (const term of searchTerms) {
+    if (!haystack.includes(term)) {
+      continue
+    }
+
+    score += term.startsWith('dn') || term.startsWith('pn') ? 6 : term.length >= 5 ? 3 : 1
+
+    if (title.includes(term)) {
+      score += 2
+    }
+    if (sku.includes(term)) {
+      score += 2
+    }
+    if (category.includes(term)) {
+      score += 1
+    }
+  }
+
+  return score
+}
+
+function rankProductsForContext(
+  products: CatalogProduct[],
+  keywords: string[],
+  context: string | undefined,
+  limit: number,
+): CatalogProduct[] {
+  const searchTerms = buildProductSearchTerms(keywords, context)
+
+  return products
+    .map((product) => ({
+      product,
+      score: scoreProductMatch(product, searchTerms),
+      stockQuantity: readProductStock(product),
+    }))
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score
+      }
+      if (right.stockQuantity !== left.stockQuantity) {
+        return right.stockQuantity - left.stockQuantity
+      }
+      return left.product.title.localeCompare(right.product.title, 'pl')
+    })
+    .slice(0, limit)
+    .map(({ product }) => product)
 }
 
 function pickBestPrice(
@@ -242,29 +387,29 @@ Returns matching products with scoped pricing, category, and stock metadata for 
     keywords: z.array(z.string().min(1)).min(1).describe('Product-related keywords from the conversation'),
     customerId: z.string().uuid().optional().describe('Customer entity ID used for customer-specific pricing'),
     limit: z.number().int().min(1).max(10).optional().default(3).describe('Maximum number of products to return'),
+    context: z.string().optional().describe('Raw transcript fragment used to improve fuzzy product matching'),
   }),
   requiredFeatures: ['voice_channels.copilot.view'],
   handler: async (input, ctx) => {
     const { em, organizationId, tenantId } = requireScope(ctx)
-    const pattern = buildKeywordPattern(input.keywords)
-
-    const products = await em.find(
+    const activeProducts = await em.find(
       CatalogProduct,
       {
         organizationId,
         tenantId,
         isActive: true,
         deletedAt: null,
-        $or: [
-          { title: { $re: pattern } },
-          { sku: { $re: pattern } },
-          { description: { $re: pattern } },
-        ],
       },
       {
         orderBy: { title: 'ASC' },
-        limit: input.limit ?? 3,
+        limit: 250,
       }
+    )
+    const products = rankProductsForContext(
+      activeProducts,
+      input.keywords,
+      input.context,
+      input.limit ?? 3,
     )
 
     const productIds = products.map((product) => product.id)
@@ -446,19 +591,27 @@ Returns the base price, customer-specific price when applicable, and active cata
         deletedAt: null,
       })
     } else if (readString(input.context)) {
-      const pattern = buildKeywordPattern((input.context ?? '').split(/\s+/))
+      const activeProducts = await em.find(
+        CatalogProduct,
+        {
+          organizationId,
+          tenantId,
+          isActive: true,
+          deletedAt: null,
+        },
+        {
+          orderBy: { title: 'ASC' },
+          limit: 250,
+        }
+      )
+
       product =
-        (await em.findOne(
-          CatalogProduct,
-          {
-            organizationId,
-            tenantId,
-            isActive: true,
-            deletedAt: null,
-            $or: [{ title: { $re: pattern } }, { sku: { $re: pattern } }],
-          },
-          { orderBy: { title: 'ASC' } }
-        )) ?? null
+        rankProductsForContext(
+          activeProducts,
+          tokenizeSearchText(input.context ?? ''),
+          input.context,
+          1,
+        )[0] ?? null
     }
 
     if (!product) {
