@@ -39,6 +39,10 @@ import {
 const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
   Object.fromEntries(aiTools.map((tool) => [tool.name, tool.handler as any]))
 
+const PROFILE_ENABLED = (process.env.OM_PROFILE ?? '').split(',').some(
+  (filter) => filter === '*' || filter === 'all' || filter === 'voice_channels.*' || filter === 'voice_channels.copilot',
+)
+
 /**
  * Copilot Orchestrator
  *
@@ -68,14 +72,7 @@ interface CopilotSession {
   companyContext: string | null
 }
 
-// Sessions live on globalThis so that every per-request orchestrator instance
-// shares the same in-flight call state. Awilix .singleton() is only container-
-// scoped; each HTTP request creates a fresh container and a fresh orchestrator
-// whose local `sessions` Map would otherwise be empty. The result would be:
-// POST /mock/start populates session A in container A's orchestrator, then the
-// simulator's delayed setTimeout emissions land in a subscriber resolving
-// container B's orchestrator, whose sessions map is empty, so processSegment
-// early-returns and no keyword suggestions ever fire.
+// Sessions live on globalThis so all per-request orchestrator instances share call state.
 const GLOBAL_SESSIONS_KEY = '__voiceChannelsCopilotSessions__'
 
 function getSharedSessions(): Map<string, CopilotSession> {
@@ -445,7 +442,7 @@ Return only the updated memory document.`
     keywords: string[] = [],
   ): Promise<SuggestionCard> {
     const suggestionId = this.nextSuggestionId(session)
-    const lines = await this.resolveQuickActionLines(session, keywords, confidence, triggerText)
+    const { lines, extractionMethod } = await this.resolveQuickActionLines(session, keywords, confidence, triggerText)
     const channelId = await this.resolvePreferredChannelId(session)
 
     return {
@@ -472,6 +469,7 @@ Return only the updated memory document.`
             transcriptSummary: summarizeTranscriptSegments(session.contextWindow),
             detectedIntents: Array.from(session.recentSuggestionTypes.keys()),
             lines,
+            extractionMethod,
             note: triggerText || null,
           },
         },
@@ -487,10 +485,7 @@ Return only the updated memory document.`
   }
 
   private buildProductSearchKeywords(segments: TranscriptSegment[], keywords: string[], limit = 8): string[] {
-    // Prefer tokens from CUSTOMER segments (the buyer names the products) over
-    // rep greetings/small-talk. Reverse so the most recent customer turns seed
-    // the keyword set first — quote extraction happens on the final order turn,
-    // so its product words matter more than the opener "Dzień dobry".
+    // Customer segments first (most recent first), then rep segments.
     const customerTokens = [...segments]
       .reverse()
       .filter((segment) => segment.speaker === 'customer')
@@ -550,11 +545,7 @@ Return only the updated memory document.`
     ), 0)
   }
 
-  // Scans a raw LLM response for the first balanced `{...}` JSON object and
-  // returns it. Tolerates leading prose, trailing commentary, code fences,
-  // and the "Actually, re-evaluating:" follow-ups that Claude sometimes emits
-  // after completing the requested JSON. Strings and escapes are respected
-  // so braces inside quoted rationale text don't throw off the brace counter.
+  // Extracts the first balanced {...} JSON object from a raw LLM response.
   private extractFirstJsonObject(text: string): string | null {
     if (typeof text !== 'string' || text.length === 0) return null
     const cleaned = text.replace(/```(?:json)?/gi, '')
@@ -635,7 +626,7 @@ ${transcriptText}
 
 Return the JSON object now.`
 
-    console.log('[Orchestrator] extractQuoteLinesViaLlm: calling LLM', {
+    if (PROFILE_ENABLED) console.log('[copilot:profile] extractQuoteLinesViaLlm: calling LLM', {
       callId: session.callId,
       candidateProducts: catalogPayload.length,
       transcriptSegments: segments.length,
@@ -647,7 +638,7 @@ Return the JSON object now.`
       const text = await llm.complete(systemPrompt, userPrompt, { temperature: 0, maxTokens: 800 })
       if (!text) return null
 
-      console.log('[Orchestrator] extractQuoteLinesViaLlm: raw response', text.slice(0, 600))
+      if (PROFILE_ENABLED) console.log('[copilot:profile] extractQuoteLinesViaLlm: raw response', text.slice(0, 600))
 
       const jsonBlock = this.extractFirstJsonObject(text)
       if (!jsonBlock) {
@@ -679,7 +670,7 @@ Return the JSON object now.`
           confidence: Math.round(line.confidence * 100) / 100,
         }))
 
-      console.log('[Orchestrator] extractQuoteLinesViaLlm: parsed lines', {
+      if (PROFILE_ENABLED) console.log('[copilot:profile] extractQuoteLinesViaLlm: parsed lines', {
         callId: session.callId,
         rawLineCount: parseResult.data.lines.length,
         acceptedLineCount: lines.length,
@@ -807,26 +798,39 @@ Return the JSON object now.`
       }
     }
 
+    const heuristicMethod = this.hasLlmClient() ? 'heuristic_fallback' as const : 'heuristic' as const
+
     if (linesByProductId.size === 0) {
       const productId = await this.resolveQuickActionProductId(session, keywords)
       const quantity = inferQuantityFromSegments(conversationSegments.slice(-6)) ?? 1
       if (productId) {
         session.lastProductId = productId
-        return [
-          {
-            productId,
-            quantity,
-            note: triggerText || null,
-            confidence: Math.round(confidence * 100) / 100,
-          },
-        ]
+        return {
+          lines: [
+            {
+              productId,
+              quantity,
+              note: triggerText || null,
+              confidence: Math.round(confidence * 100) / 100,
+            },
+          ],
+          extractionMethod: heuristicMethod,
+        }
       }
-      return []
+      return { lines: [], extractionMethod: heuristicMethod }
     }
 
     const lines = Array.from(linesByProductId.values())
     session.lastProductId = lines[0]?.productId ?? session.lastProductId
-    return lines
+    return { lines, extractionMethod: heuristicMethod }
+  }
+
+  private hasLlmClient(): boolean {
+    try {
+      return !!this.container.resolve<unknown>('llmClient')
+    } catch {
+      return false
+    }
   }
 
   private async resolveQuickActionProductId(session: CopilotSession, keywords: string[]): Promise<string | null> {
@@ -1033,11 +1037,6 @@ Return the JSON object now.`
           ctx: commandContext,
         })
 
-        console.log('[Orchestrator] registerCallActivity: call activity created', {
-          callId: session.callId,
-          entityId: targetId,
-          interactionId: result?.interactionId ?? null,
-        })
       } catch (err) {
         console.error('[Orchestrator] registerCallActivity: failed for target', {
           callId: session.callId,

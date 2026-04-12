@@ -153,6 +153,7 @@ export interface VoiceCreateQuotePrefill {
   shippingAddressId?: string | null
   billingAddressId?: string | null
   note?: string | null
+  extractionMethod?: 'llm' | 'heuristic' | 'heuristic_fallback'
 }
 
 export interface QuickActionCard extends SuggestionCardBase {

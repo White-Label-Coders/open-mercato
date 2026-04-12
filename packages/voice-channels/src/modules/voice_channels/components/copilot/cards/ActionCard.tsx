@@ -162,6 +162,18 @@ export function ActionCard({ card, onDismiss }: Props) {
           </Button>
         ))}
       </div>
+      {card.actions.some((action) => action.prefill?.extractionMethod === 'heuristic_fallback') && (
+        <div style={{
+          fontSize: '11px',
+          color: '#92400e',
+          backgroundColor: '#fffbeb',
+          padding: '4px 8px',
+          borderRadius: '4px',
+          margin: '0 16px 12px',
+        }}>
+          ⚠ Pozycje mogą wymagać korekty (AI niedostępne)
+        </div>
+      )}
     </div>
   )
 }

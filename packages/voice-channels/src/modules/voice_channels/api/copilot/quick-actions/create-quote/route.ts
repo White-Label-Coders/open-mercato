@@ -48,6 +48,7 @@ const createQuoteQuickActionSchema = z.object({
     shippingAddressId: z.string().uuid().optional().nullable(),
     billingAddressId: z.string().uuid().optional().nullable(),
     note: z.string().trim().max(2000).optional().nullable(),
+    extractionMethod: z.enum(['llm', 'heuristic', 'heuristic_fallback']).optional().nullable(),
   }),
 })
 
@@ -407,6 +408,7 @@ export async function POST(req: Request) {
             transcriptSummary: parsed.prefill.transcriptSummary,
             detectedIntents: parsed.prefill.detectedIntents,
             companyId: parsed.prefill.companyId ?? null,
+            extractionMethod: parsed.prefill.extractionMethod ?? null,
           },
         },
         lines,
