@@ -1,26 +1,45 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useT } from '@open-mercato/shared/lib/i18n/context'
+import { cn } from '@open-mercato/shared/lib/utils'
 import { flash, useNotify } from '@open-mercato/ui/backend/FlashMessages'
 import { useGuardedMutation } from '@open-mercato/ui/backend/injection/useGuardedMutation'
 import { readApiResultOrThrow } from '@open-mercato/ui/backend/utils/apiCall'
 import { Button } from '@open-mercato/ui/primitives/button'
-import { IconButton } from '@open-mercato/ui/primitives/icon-button'
-import type { QuickActionCard, VoiceCreateQuotePrefill } from '../../../types'
+import type { QuickActionCard, TranscriptSegment, VoiceCreateQuotePrefill } from '../../../types'
+import { CopilotCardFrame } from './CopilotCardFrame'
+import { FollowUpDialog } from './FollowUpDialog'
+import { NoteEditorPopup } from './NoteEditorPopup'
 
 interface Props {
   card: QuickActionCard
+  segments: TranscriptSegment[]
   onDismiss: () => void
 }
 
-export function ActionCard({ card, onDismiss }: Props) {
+const ACTION_BUTTON_CLASSES: Record<QuickActionCard['actions'][number]['actionType'], string> = {
+  create_quote: 'border-blue-500/40 bg-blue-500/15 text-blue-200 hover:bg-blue-500/25 hover:text-blue-200',
+  schedule_followup:
+    'border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 hover:text-emerald-200',
+  add_note: 'border-amber-500/40 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25 hover:text-amber-200',
+}
+
+export function ActionCard({ card, segments, onDismiss }: Props) {
+  const t = useT()
   const router = useRouter()
   const notify = useNotify()
   const { runMutation } = useGuardedMutation<Record<string, unknown>>({
     contextId: `voice-copilot-quick-action-${card.id}`,
   })
+  const [followUpOpen, setFollowUpOpen] = useState(false)
+  const [noteOpen, setNoteOpen] = useState(false)
   const [pendingActionType, setPendingActionType] = useState<string | null>(null)
+  const keepVisible = useCallback(() => undefined, [])
+
+  const followUpAction = card.actions.find((a) => a.actionType === 'schedule_followup')
+  const noteAction = card.actions.find((a) => a.actionType === 'add_note')
 
   const canExecuteQuoteAction = (prefill?: Record<string, unknown>) => {
     if (!prefill) return false
@@ -29,14 +48,8 @@ export function ActionCard({ card, onDismiss }: Props) {
     return Boolean(customerId) && lines.length > 0
   }
 
-  const handleAction = async (actionType: string, rawPrefill?: Record<string, unknown>) => {
+  const handleQuoteAction = async (rawPrefill?: Record<string, unknown>) => {
     if (pendingActionType) return
-
-    if (actionType !== 'create_quote') {
-      flash(`Akcja ${actionType} nie jest jeszcze podłączona do workflow.`, 'info')
-      return
-    }
-
     if (!canExecuteQuoteAction(rawPrefill)) {
       flash('Brakuje danych z rozmowy do utworzenia oferty.', 'error')
       return
@@ -65,115 +78,111 @@ export function ActionCard({ card, onDismiss }: Props) {
           : card.triggerText,
     } as VoiceCreateQuotePrefill
 
-    setPendingActionType(actionType)
-
+    setPendingActionType('create_quote')
     try {
-      const result = await runMutation<{
-        quoteId: string
-        redirectTo: string
-      }>({
+      const result = await runMutation<{ quoteId: string; redirectTo: string }>({
         operation: () =>
           readApiResultOrThrow<{ quoteId: string; redirectTo: string }>(
             '/api/voice_channels/copilot/quick-actions/create-quote',
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                actionType,
-                prefill,
-              }),
+              body: JSON.stringify({ actionType: 'create_quote', prefill }),
             },
-            {
-              errorMessage: 'Nie udało się utworzyć oferty z rozmowy.',
-            },
+            { errorMessage: 'Nie udało się utworzyć oferty z rozmowy.' },
           ),
-        context: {
-          suggestionId: card.id,
-          actionType,
-          callId: prefill.source.callId,
-        },
-        mutationPayload: {
-          suggestionId: card.id,
-          actionType,
-          callId: prefill.source.callId,
-        },
+        context: { suggestionId: card.id, actionType: 'create_quote', callId: prefill.source.callId },
+        mutationPayload: { suggestionId: card.id, actionType: 'create_quote', callId: prefill.source.callId },
       })
-
       notify({
         message: 'Oferta została utworzona na podstawie rozmowy.',
         type: 'success',
-        action: {
-          label: 'Otwórz ofertę',
-          onClick: () => {
-            router.push(result.redirectTo)
-          },
-        },
+        action: { label: 'Otwórz ofertę', onClick: () => router.push(result.redirectTo) },
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Nie udało się utworzyć oferty z rozmowy.'
-      flash(message, 'error')
+      flash(error instanceof Error ? error.message : 'Nie udało się utworzyć oferty z rozmowy.', 'error')
     } finally {
       setPendingActionType(null)
     }
   }
 
+  const handleAction = useCallback(
+    (actionType: string, prefill?: Record<string, unknown>) => {
+      switch (actionType) {
+        case 'create_quote':
+          void handleQuoteAction(prefill)
+          break
+        case 'schedule_followup':
+          setFollowUpOpen(true)
+          break
+        case 'add_note':
+          setNoteOpen(true)
+          break
+        default:
+          flash(
+            t(
+              'voice_channels.copilot.cards.quickActions.notConnected',
+              'Action {actionType} is not connected to a workflow yet.',
+              { actionType },
+            ),
+            'info',
+          )
+      }
+    },
+    [t],
+  )
+
   return (
-    <div
-      style={{
-        backgroundColor: '#fff',
-        borderRadius: '10px',
-        border: '1px solid #e2e8f0',
-        borderLeft: '4px solid #22c55e',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-      }}
-    >
-      <div
-        style={{
-          padding: '12px 16px',
-          backgroundColor: '#f0fdf4',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
+    <>
+      <CopilotCardFrame
+        tone="emerald"
+        title={t('voice_channels.copilot.cards.quickActions.title', 'Quick actions')}
+        icon="⚡"
+        triggerText={card.triggerText}
+        onDismiss={onDismiss}
+        dismissLabel={t('voice_channels.copilot.cards.dismiss.quickActions', 'Dismiss quick actions')}
       >
-        <span style={{ fontSize: '13px', fontWeight: 700, color: '#166534' }}>⚡ Szybkie akcje</span>
-        <IconButton type="button" variant="ghost" size="sm" onClick={onDismiss} aria-label="Dismiss quick actions">
-          ✕
-        </IconButton>
-      </div>
-      <div style={{ padding: '12px 16px', fontSize: '12px', color: '#64748b', fontStyle: 'italic' }}>
-        &ldquo;{card.triggerText}&rdquo;
-      </div>
-      <div style={{ padding: '0 16px 16px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        {card.actions.map((action, i) => (
-          <Button
-            key={i}
-            type="button"
-            onClick={() => void handleAction(action.actionType, action.prefill)}
-            variant="outline"
-            size="sm"
-            className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-            disabled={
-              pendingActionType !== null ||
-              (action.actionType === 'create_quote' && !canExecuteQuoteAction(action.prefill))
-            }
-          >
-            {pendingActionType === action.actionType ? 'Tworzenie...' : action.label}
-          </Button>
-        ))}
-      </div>
-      {card.actions.some((action) => action.prefill?.extractionMethod === 'heuristic_fallback') && (
-        <div style={{
-          fontSize: '11px',
-          color: '#92400e',
-          backgroundColor: '#fffbeb',
-          padding: '4px 8px',
-          borderRadius: '4px',
-          margin: '0 16px 12px',
-        }}>
-          ⚠ Pozycje mogą wymagać korekty (AI niedostępne)
+        <div className="flex flex-wrap gap-2">
+          {card.actions.map((action, i) => (
+            <Button
+              key={i}
+              type="button"
+              onClick={() => handleAction(action.actionType, action.prefill)}
+              variant="outline"
+              size="sm"
+              className={cn(
+                'h-auto rounded-md border px-3 py-1.5 text-xs font-semibold shadow-none',
+                ACTION_BUTTON_CLASSES[action.actionType],
+              )}
+              disabled={
+                pendingActionType !== null ||
+                (action.actionType === 'create_quote' && !canExecuteQuoteAction(action.prefill))
+              }
+            >
+              {pendingActionType === action.actionType ? 'Tworzenie...' : action.label}
+            </Button>
+          ))}
         </div>
-      )}
-    </div>
+        {card.actions.some((action) => action.prefill?.extractionMethod === 'heuristic_fallback') && (
+          <div className="mt-2 rounded bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">
+            ⚠ Pozycje mogą wymagać korekty (AI niedostępne)
+          </div>
+        )}
+      </CopilotCardFrame>
+
+      <FollowUpDialog
+        open={followUpOpen}
+        onOpenChange={setFollowUpOpen}
+        prefill={followUpAction?.prefill ?? {}}
+        onSuccess={keepVisible}
+      />
+      <NoteEditorPopup
+        open={noteOpen}
+        onOpenChange={setNoteOpen}
+        prefill={noteAction?.prefill ?? {}}
+        segments={segments}
+        onSuccess={keepVisible}
+      />
+    </>
   )
 }

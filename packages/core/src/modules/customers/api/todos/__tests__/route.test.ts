@@ -225,6 +225,21 @@ describe('customers todos adapter route', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('Deprecation')).toBe('true')
 
+    const { listCanonicalTodoRows } = jest.requireMock('../../../lib/todoCompatibility')
+    expect(listCanonicalTodoRows).toHaveBeenCalledWith(
+      mockEm,
+      mockContainer,
+      mockContext.auth,
+      ORG_ID,
+      [ORG_ID],
+      expect.objectContaining({
+        entityId: ENTITY_ID,
+        includeDeleted: true,
+        source: 'adapter:todo',
+        sourcePrefix: 'voice_channels.copilot:',
+      }),
+    )
+
     const body = await res.json()
     expect(body.items).toHaveLength(1)
     expect(body.items[0]).toMatchObject({
@@ -300,6 +315,31 @@ describe('customers todos adapter route', () => {
           body: 'legacy due date check',
           scheduledAt: '2026-04-10T15:00:00.000Z',
           priority: 3,
+        }),
+      }),
+    )
+  })
+
+  it('preserves copilot source when creating adapter-backed follow-up tasks', async () => {
+    mockCommandBus.execute.mockResolvedValueOnce({ interactionId: TODO_ID })
+
+    await POST(
+      new Request('http://localhost/api/customers/todos', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          entityId: ENTITY_ID,
+          title: 'Create copilot follow-up',
+          source: 'voice_channels.copilot:call-123',
+        }),
+      }),
+    )
+
+    expect(mockCommandBus.execute).toHaveBeenCalledWith(
+      'customers.interactions.create',
+      expect.objectContaining({
+        input: expect.objectContaining({
+          source: 'voice_channels.copilot:call-123',
         }),
       }),
     )

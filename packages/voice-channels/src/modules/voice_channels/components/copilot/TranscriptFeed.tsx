@@ -1,6 +1,9 @@
 'use client'
 
 import { useRef, useEffect } from 'react'
+import { useT } from '@open-mercato/shared/lib/i18n/context'
+import { cn } from '@open-mercato/shared/lib/utils'
+import { Badge } from '@open-mercato/ui/primitives/badge'
 import type { TranscriptSegment } from '../../types'
 
 interface TranscriptFeedProps {
@@ -8,10 +11,31 @@ interface TranscriptFeedProps {
   highlightedSegmentId?: number | null
 }
 
-const SPEAKER_STYLES: Record<string, { color: string; label: string; bg: string }> = {
-  rep: { color: '#2563eb', label: 'Handlowiec', bg: '#eff6ff' },
-  customer: { color: '#7c3aed', label: 'Klient', bg: '#f5f3ff' },
-  unknown: { color: '#6b7280', label: 'Nieznany', bg: '#f9fafb' },
+const SPEAKER_STYLES: Record<
+  string,
+  { labelKey: string; fallbackLabel: string; container: string; badge: string; dot: string }
+> = {
+  rep: {
+    labelKey: 'voice_channels.copilot.transcript.speaker.rep',
+    fallbackLabel: 'Sales rep',
+    container: 'border-blue-500/30 bg-slate-950',
+    badge: 'border-blue-500/40 bg-blue-500/15 text-blue-200',
+    dot: 'bg-blue-500',
+  },
+  customer: {
+    labelKey: 'voice_channels.copilot.transcript.speaker.customer',
+    fallbackLabel: 'Customer',
+    container: 'border-violet-500/30 bg-slate-950',
+    badge: 'border-violet-500/40 bg-violet-500/15 text-violet-200',
+    dot: 'bg-violet-500',
+  },
+  unknown: {
+    labelKey: 'voice_channels.copilot.transcript.speaker.unknown',
+    fallbackLabel: 'Unknown',
+    container: 'border-slate-700 bg-slate-950',
+    badge: 'border-slate-600 bg-slate-800 text-slate-200',
+    dot: 'bg-slate-400',
+  },
 }
 
 function formatTime(seconds: number): string {
@@ -21,6 +45,7 @@ function formatTime(seconds: number): string {
 }
 
 export function TranscriptFeed({ segments, highlightedSegmentId }: TranscriptFeedProps) {
+  const t = useT()
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -31,74 +56,50 @@ export function TranscriptFeed({ segments, highlightedSegmentId }: TranscriptFee
 
   if (segments.length === 0) {
     return (
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#94a3b8',
-          fontSize: '15px',
-        }}
-      >
-        Oczekiwanie na transkrypcję...
+      <div className="flex flex-1 items-center justify-center text-[15px] text-slate-500">
+        {t('voice_channels.copilot.transcript.waiting', 'Waiting for transcript...')}
       </div>
     )
   }
 
   return (
-    <div
-      ref={scrollRef}
-      style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 20px' }}
-    >
-      {segments.map((segment) => {
-        const style = SPEAKER_STYLES[segment.speaker] || SPEAKER_STYLES.unknown
-        const isHighlighted = segment.segmentId === highlightedSegmentId
+    <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+      <div className="space-y-3">
+        {segments.map((segment) => {
+          const style = SPEAKER_STYLES[segment.speaker] || SPEAKER_STYLES.unknown
+          const isHighlighted = segment.segmentId === highlightedSegmentId
 
-        return (
-          <div
-            key={segment.segmentId}
-            style={{
-              marginBottom: '12px',
-              padding: '12px 16px',
-              borderRadius: '8px',
-              backgroundColor: isHighlighted ? '#fefce8' : style.bg,
-              borderLeft: `3px solid ${isHighlighted ? '#eab308' : style.color}`,
-              animation: isHighlighted
-                ? 'highlightPulse 1.5s ease-in-out 2'
-                : 'fadeIn 0.3s ease-in',
-              boxShadow: isHighlighted ? '0 0 12px rgba(234, 179, 8, 0.3)' : 'none',
-              transition: 'all 0.3s ease',
-            }}
-          >
+          return (
             <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                marginBottom: '4px',
-              }}
+              key={segment.segmentId}
+              className={cn(
+                'animate-[fadeIn_0.3s_ease-in] rounded-xl border p-4 shadow-xs transition-all',
+                style.container,
+                isHighlighted &&
+                  'animate-[highlightPulse_1.5s_ease-in-out_2] border-amber-400 bg-amber-500/10 shadow-md',
+              )}
             >
-              <span
-                style={{
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  color: style.color,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.5px',
-                }}
-              >
-                {style.label}
-              </span>
-              <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                {formatTime(segment.startTime)}
-              </span>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn('inline-block size-2 rounded-full', isHighlighted ? 'bg-amber-500' : style.dot)}
+                  />
+                  <Badge
+                    variant="outline"
+                    className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-semibold', style.badge)}
+                  >
+                    {t(style.labelKey, style.fallbackLabel)}
+                  </Badge>
+                </div>
+                <span className="text-[11px] text-slate-500">
+                  {formatTime(segment.startTime)}
+                </span>
+              </div>
+              <div className="text-[15px] leading-6 text-slate-100">{segment.text}</div>
             </div>
-            <div style={{ fontSize: '15px', color: '#1e293b', lineHeight: 1.5 }}>
-              {segment.text}
-            </div>
-          </div>
-        )
-      })}
+          )
+        })}
+      </div>
     </div>
   )
 }

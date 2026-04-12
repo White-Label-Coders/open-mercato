@@ -24,6 +24,7 @@ import {
   writeCompanyContext,
   COPILOT_CONTEXT_MAX_LENGTH,
 } from './company-context'
+import { generateQuickActionPrefill, type QuickActionPrefillResult } from './generate-quick-action-prefill'
 import type { EntityManager } from '@mikro-orm/core'
 import type { CommandBus, CommandRuntimeContext } from '@open-mercato/shared/lib/commands'
 import { CUSTOMER_INTERACTION_ACTIVITY_ADAPTER_SOURCE } from '@open-mercato/core/modules/customers/lib/interactionCompatibility'
@@ -71,6 +72,33 @@ interface CopilotSession {
   companyProfileId: string | null
   companyEntityId: string | null
   companyContext: string | null
+}
+
+function resolveFollowUpTargetEntityId(session: CopilotSession): string | null {
+  if (session.companyEntityId) {
+    return session.companyEntityId
+  }
+  return session.customerId
+}
+
+function resolveFollowUpTargetEntityIds(session: CopilotSession): string[] {
+  return Array.from(
+    new Set(
+      [session.customerId, session.companyEntityId].filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      ),
+    ),
+  )
+}
+
+function resolveNoteTargetEntityIds(session: CopilotSession): string[] {
+  return Array.from(
+    new Set(
+      [session.customerId, session.companyEntityId].filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      ),
+    ),
+  )
 }
 
 // Sessions live on globalThis so all per-request orchestrator instances share call state.
@@ -234,22 +262,37 @@ export class CopilotOrchestrator {
     if (!session) return
 
     try {
+      await this.registerCallActivity(session)
+    } catch (err) {
+      console.error('[Orchestrator] Failed to register call activity:', err)
+    }
+
+    let prefill: QuickActionPrefillResult | null = null
+    try {
+      prefill = await generateQuickActionPrefill({
+        callId: session.callId,
+        customerId: session.customerId,
+        targetEntityId: resolveFollowUpTargetEntityId(session),
+        ownerUserId: session.repUserId,
+        contextWindow: session.contextWindow,
+        detectedIntents: Array.from(session.recentSuggestionTypes.keys()),
+      })
+    } catch (err) {
+      console.error('[Orchestrator] Failed to generate quick-action prefill:', err)
+    }
+
+    try {
       const finalQuickAction = await this.buildQuickAction(
         session,
         'Podsumowanie rozmowy',
         0,
         1,
+        prefill,
       )
       finalQuickAction.detectedIntent = 'Szybkie akcje po rozmowie'
       await this.emitSuggestion(session, finalQuickAction)
     } catch (err) {
       console.error('[Orchestrator] Failed to emit final quick-action card:', err)
-    }
-
-    try {
-      await this.registerCallActivity(session)
-    } catch (err) {
-      console.error('[Orchestrator] Failed to register call activity:', err)
     }
 
     try {
@@ -380,6 +423,7 @@ Return only the updated memory document.`
       keywords,
       customerId: session.customerId,
       limit: 3,
+      context: triggerText,
     }, session)
 
     if (!toolResult || toolResult.products.length === 0) return null
@@ -474,8 +518,26 @@ Return only the updated memory document.`
             note: triggerText || null,
           },
         },
-        { label: 'Zaplanuj follow-up', actionType: 'schedule_followup', prefill: { customerId: session.customerId } },
-        { label: 'Dodaj notatkę', actionType: 'add_note', prefill: {} },
+        {
+          label: 'Zaplanuj follow-up',
+          actionType: 'schedule_followup',
+          prefill: {
+            customerId: session.customerId,
+            targetEntityId: resolveFollowUpTargetEntityId(session),
+            targetEntityIds: resolveFollowUpTargetEntityIds(session),
+            callId: session.callId,
+            ownerUserId: session.repUserId,
+          },
+        },
+        {
+          label: 'Dodaj notatkę',
+          actionType: 'add_note',
+          prefill: {
+            customerId: session.customerId,
+            targetEntityIds: resolveNoteTargetEntityIds(session),
+            callId: session.callId,
+          },
+        },
       ],
     }
   }

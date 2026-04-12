@@ -241,6 +241,7 @@ export default function CustomerPersonDetailPage({ params }: { params?: { id?: s
     () => (data?.person?.displayName ? data.person.displayName : t('customers.people.list.deleteFallbackName')),
     [data?.person?.displayName, t]
   )
+  const useCanonicalInteractions = data?.interactionMode === 'canonical'
 
   const dealsScope = React.useMemo(
     () => (personId ? ({ kind: 'person', entityId: personId } as const) : null),
@@ -853,6 +854,7 @@ export default function CustomerPersonDetailPage({ params }: { params?: { id?: s
                   <TasksSection
                     entityId={personId}
                     initialTasks={data.todos}
+                    useCanonicalInteractions={useCanonicalInteractions}
                     runGuardedMutation={runMutationWithContext}
                     emptyLabel={t('customers.people.detail.empty.todos')}
                     addActionLabel={t('customers.people.detail.tasks.add')}

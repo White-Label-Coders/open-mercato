@@ -72,6 +72,34 @@ export type CanonicalTodoListResult = {
   bridgeIds: Set<string>
 }
 
+function matchesSourceFilter(
+  value: string | null | undefined,
+  source: string | string[] | null | undefined,
+  sourcePrefix: string | string[] | null | undefined,
+): boolean {
+  const normalizedValue = typeof value === 'string' ? value.trim() : ''
+  const exactSources = source == null ? [] : Array.isArray(source) ? source : [source]
+  const prefixes = sourcePrefix == null ? [] : Array.isArray(sourcePrefix) ? sourcePrefix : [sourcePrefix]
+
+  if (exactSources.length === 0 && prefixes.length === 0) {
+    return true
+  }
+
+  if (exactSources.some((entry) => entry === normalizedValue)) {
+    return true
+  }
+
+  if (
+    prefixes.some(
+      (entry) => typeof entry === 'string' && entry.length > 0 && normalizedValue.startsWith(entry),
+    )
+  ) {
+    return true
+  }
+
+  return false
+}
+
 function resolveLegacyTodoSource(source: string | null | undefined): string {
   return typeof source === 'string' && source.trim().length > 0
     ? source
@@ -398,6 +426,7 @@ export async function listCanonicalTodoRows(
     entityId?: string
     includeDeleted?: boolean
     source?: string | string[] | null
+    sourcePrefix?: string | string[] | null
   },
 ): Promise<CanonicalTodoListResult> {
   const where: Record<string, unknown> = {
@@ -413,13 +442,15 @@ export async function listCanonicalTodoRows(
   if (options?.entityId) {
     where.entity = options.entityId
   }
-  if (options?.source) {
+  if (options?.source && !options?.sourcePrefix) {
     where.source = Array.isArray(options.source) ? { $in: options.source } : options.source
   }
 
-  const interactions = await em.find(CustomerInteraction, where, {
+  const interactions = (await em.find(CustomerInteraction, where, {
     orderBy: { createdAt: 'desc' },
-  })
+  })).filter((interaction) =>
+    matchesSourceFilter(interaction.source ?? null, options?.source, options?.sourcePrefix),
+  )
   const activeInteractions = interactions.filter((interaction) => !interaction.deletedAt)
   const groups = new Map<string, CustomerInteraction[]>()
 
