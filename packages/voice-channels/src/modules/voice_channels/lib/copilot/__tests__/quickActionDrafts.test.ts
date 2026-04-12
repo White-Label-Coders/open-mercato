@@ -61,6 +61,36 @@ describe('quickActionDrafts', () => {
     ])
   })
 
+  it('parses Polish word-form pięćset as 500', () => {
+    expect(inferQuantityFromText('Pięćset rur DN50')).toBe(500)
+  })
+
+  it('parses Polish word-form dwieście as 200', () => {
+    expect(inferQuantityFromText('dwieście zaworów kulowych')).toBe(200)
+  })
+
+  it('excludes time units', () => {
+    expect(inferQuantityFromText('wysyłka w 48 godzin')).toBeNull()
+  })
+
+  it('excludes percentages', () => {
+    expect(inferQuantityFromText('12 procent rabatu')).toBeNull()
+  })
+
+  it('extracts quantity near pipe aliases', () => {
+    expect(extractQuantityNearAliases(
+      'Pięćset rur DN50 i dwieście zaworów kulowych DN25',
+      ['rur', 'DN50'],
+    )).toBe(500)
+  })
+
+  it('extracts quantity near valve aliases', () => {
+    expect(extractQuantityNearAliases(
+      'Pięćset rur DN50 i dwieście zaworów kulowych DN25',
+      ['zaworów', 'kulowych', 'DN25'],
+    )).toBe(200)
+  })
+
   it('summarizes only the tail of the transcript', () => {
     const segments: TranscriptSegment[] = Array.from({ length: 10 }, (_, index) => ({
       segmentId: index + 1,

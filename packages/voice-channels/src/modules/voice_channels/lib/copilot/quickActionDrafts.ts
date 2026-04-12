@@ -1,7 +1,11 @@
 import type { TranscriptSegment } from '../../types'
+import {
+  type QuantityMention,
+  collectWordNumberMentions,
+  hasNonQuantityUnitAfter,
+} from '../text/polishText'
 
 const QUANTITY_PATTERN = /(\d+(?:[.,]\d+)?)\s*(?:szt(?:\.|uk[ięa]?)?|pcs?|pieces?|units?|jednost(?:ek|ki|ka)?|opakowa(?:ń|nia|nie)?|palet(?:y|a)?)/i
-const NUMBER_PATTERN = /(^|[^\p{L}\p{N}-])(\d+(?:[.,]\d+)?)(?=$|[^\p{L}\p{N}-])/iu
 const GLOBAL_QUANTITY_PATTERN = /(\d+(?:[.,]\d+)?)\s*(?:szt(?:\.|uk[ięa]?)?|pcs?|pieces?|units?|jednost(?:ek|ki|ka)?|opakowa(?:ń|nia|nie)?|palet(?:y|a)?)/giu
 const GLOBAL_NUMBER_PATTERN = /(^|[^\p{L}\p{N}-])(\d+(?:[.,]\d+)?)(?=$|[^\p{L}\p{N}-])/giu
 const SEARCH_TOKEN_PATTERN = /[\p{L}\p{N}][\p{L}\p{N}-]{1,}/gu
@@ -9,16 +13,28 @@ const SEARCH_TOKEN_PATTERN = /[\p{L}\p{N}][\p{L}\p{N}-]{1,}/gu
 export function inferQuantityFromText(text: string): number | null {
   if (typeof text !== 'string' || text.trim().length === 0) return null
 
+  const wordMentions = collectWordNumberMentions(text)
+  if (wordMentions.length > 0) return wordMentions[0]!.value
+
   const explicitMatch = text.match(QUANTITY_PATTERN)
-  const fallbackMatch = text.match(NUMBER_PATTERN)
-  const raw = explicitMatch?.[1] ?? fallbackMatch?.[2]
-  if (!raw) return null
+  if (explicitMatch?.[1]) {
+    const value = Number(explicitMatch[1].replace(',', '.'))
+    if (Number.isFinite(value) && value > 0) return value
+  }
 
-  const normalized = raw.replace(',', '.')
-  const value = Number(normalized)
-  if (!Number.isFinite(value) || value <= 0) return null
+  for (const match of text.matchAll(GLOBAL_NUMBER_PATTERN)) {
+    const raw = match[2]
+    const start = match.index ?? -1
+    if (!raw || start < 0) continue
+    const offset = match[1]?.length ?? 0
+    const quantityStart = start + offset
+    const quantityEnd = quantityStart + raw.length
+    if (hasNonQuantityUnitAfter(text, quantityEnd)) continue
+    const value = Number(raw.replace(',', '.'))
+    if (Number.isFinite(value) && value > 0) return value
+  }
 
-  return value
+  return null
 }
 
 export function inferQuantityFromSegments(segments: TranscriptSegment[]): number | null {
@@ -27,12 +43,6 @@ export function inferQuantityFromSegments(segments: TranscriptSegment[]): number
     if (quantity) return quantity
   }
   return null
-}
-
-type QuantityMention = {
-  value: number
-  start: number
-  end: number
 }
 
 function normalizeMatchText(text: string): string {
@@ -45,6 +55,9 @@ function normalizeMatchText(text: string): string {
 function collectQuantityMentions(text: string): QuantityMention[] {
   const mentions: QuantityMention[] = []
 
+  const wordMentions = collectWordNumberMentions(text)
+  mentions.push(...wordMentions)
+
   for (const match of text.matchAll(GLOBAL_QUANTITY_PATTERN)) {
     const raw = match[1]
     const start = match.index ?? -1
@@ -54,8 +67,6 @@ function collectQuantityMentions(text: string): QuantityMention[] {
     mentions.push({ value, start, end: start + match[0].length })
   }
 
-  if (mentions.length > 0) return mentions
-
   for (const match of text.matchAll(GLOBAL_NUMBER_PATTERN)) {
     const raw = match[2]
     const start = match.index ?? -1
@@ -64,10 +75,12 @@ function collectQuantityMentions(text: string): QuantityMention[] {
     if (!Number.isFinite(value) || value <= 0) continue
     const offset = match[1]?.length ?? 0
     const quantityStart = start + offset
+    const quantityEnd = quantityStart + raw.length
+    if (hasNonQuantityUnitAfter(text, quantityEnd)) continue
     mentions.push({
       value,
       start: quantityStart,
-      end: quantityStart + raw.length,
+      end: quantityEnd,
     })
   }
 
