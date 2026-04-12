@@ -131,6 +131,31 @@ export interface DealStatusCard extends SuggestionCardBase {
   }>
 }
 
+export interface VoiceCreateQuotePrefill {
+  source: {
+    callId: string
+    suggestionId: string
+    triggerSegmentId: number
+  }
+  customerId: string | null
+  companyId?: string | null
+  channelId?: string | null
+  currencyCode?: string | null
+  transcriptSummary: string
+  detectedIntents: string[]
+  lines: Array<{
+    productId: string
+    quantity: number
+    unitPriceGross?: number | null
+    note?: string | null
+    confidence: number
+  }>
+  shippingAddressId?: string | null
+  billingAddressId?: string | null
+  note?: string | null
+  extractionMethod?: 'llm' | 'heuristic' | 'heuristic_fallback'
+}
+
 export interface QuickActionCard extends SuggestionCardBase {
   type: 'quick_action'
   actions: Array<{

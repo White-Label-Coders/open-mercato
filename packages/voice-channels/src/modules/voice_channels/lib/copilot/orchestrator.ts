@@ -9,8 +9,13 @@ import type {
   CopilotCustomerContextResult,
   CopilotPricingCheckResult,
   CopilotOpenDealsResult,
+  VoiceCreateQuotePrefill,
 } from '@open-mercato/voice-channels/modules/voice_channels/types'
 import { IntentDetector } from './intent-detector'
+import type { LlmClient } from './llmClient'
+import { quoteLlmResponseSchema } from '../../data/validators'
+import { QUOTE_EXTRACTION_SYSTEM_PROMPT } from './prompts/quoteExtraction'
+import { buildCompanyContextMergePrompt } from './prompts/companyContextMerge'
 import { emitVoiceEvent } from '../../events'
 import aiTools from '../../ai-tools'
 import {
@@ -23,9 +28,22 @@ import { generateQuickActionPrefill, type QuickActionPrefillResult } from './gen
 import type { EntityManager } from '@mikro-orm/core'
 import type { CommandBus, CommandRuntimeContext } from '@open-mercato/shared/lib/commands'
 import { CUSTOMER_INTERACTION_ACTIVITY_ADAPTER_SOURCE } from '@open-mercato/core/modules/customers/lib/interactionCompatibility'
+import { SalesChannel } from '@open-mercato/core/modules/sales/data/entities'
+import {
+  extractQuantityNearAliases,
+  extractSearchKeywordsFromText,
+  inferQuantityFromSegments,
+  inferQuantityFromText,
+  summarizeTranscriptSegments,
+} from './quickActionDrafts'
+import { expandStemVariants, PL_STOPWORDS, stripDiacritics } from '../text/polishText'
 
 const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
   Object.fromEntries(aiTools.map((tool) => [tool.name, tool.handler as any]))
+
+const PROFILE_ENABLED = (process.env.OM_PROFILE ?? '').split(',').some(
+  (filter) => filter === '*' || filter === 'all' || filter === 'voice_channels.*' || filter === 'voice_channels.copilot',
+)
 
 /**
  * Copilot Orchestrator
@@ -83,14 +101,7 @@ function resolveNoteTargetEntityIds(session: CopilotSession): string[] {
   )
 }
 
-// Sessions live on globalThis so that every per-request orchestrator instance
-// shares the same in-flight call state. Awilix .singleton() is only container-
-// scoped; each HTTP request creates a fresh container and a fresh orchestrator
-// whose local `sessions` Map would otherwise be empty. The result would be:
-// POST /mock/start populates session A in container A's orchestrator, then the
-// simulator's delayed setTimeout emissions land in a subscriber resolving
-// container B's orchestrator, whose sessions map is empty, so processSegment
-// early-returns and no keyword suggestions ever fire.
+// Sessions live on globalThis so all per-request orchestrator instances share call state.
 const GLOBAL_SESSIONS_KEY = '__voiceChannelsCopilotSessions__'
 
 function getSharedSessions(): Map<string, CopilotSession> {
@@ -116,7 +127,7 @@ export class CopilotOrchestrator {
 
   constructor(container: AppContainer) {
     this.container = container
-    this.intentDetector = new IntentDetector()
+    this.intentDetector = new IntentDetector(container)
   }
 
   /**
@@ -271,12 +282,15 @@ export class CopilotOrchestrator {
     }
 
     try {
+      const endSessionKeywords = session.contextWindow
+        .filter((s) => s.speaker === 'customer')
+        .flatMap((s) => extractSearchKeywordsFromText(s.text, 20))
       const finalQuickAction = await this.buildQuickAction(
         session,
         'Podsumowanie rozmowy',
         0,
         1,
-        prefill,
+        endSessionKeywords,
       )
       finalQuickAction.detectedIntent = 'Szybkie akcje po rozmowie'
       await this.emitSuggestion(session, finalQuickAction)
@@ -308,11 +322,7 @@ export class CopilotOrchestrator {
    * or returns nothing useful.
    */
   private async mergeCompanyContext(session: CopilotSession): Promise<string | null> {
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
-      console.warn('[Orchestrator] No ANTHROPIC_API_KEY — skipping company context merge')
-      return null
-    }
+    const llm = this.container.resolve<LlmClient>('llmClient')
 
     const prior = session.companyContext?.trim() || '(empty)'
     const intentSummary = Array.from(session.recentSuggestionTypes.keys()).join(', ') || '(none detected)'
@@ -321,19 +331,7 @@ export class CopilotOrchestrator {
       .join('\n')
       .slice(0, 6000)
 
-    const systemPrompt = `You maintain a long-term memory document for a B2B customer relationship. You will be given:
-1. The PRIOR memory text (or "(empty)").
-2. A new call transcript (rep + customer turns).
-3. A list of intents detected during the call.
-
-Your job: produce a single updated memory document. Rules:
-- Plain text only. No markdown fences, no headers, no commentary.
-- Stay under ${COPILOT_CONTEXT_MAX_LENGTH} characters total.
-- Preserve durable facts from the PRIOR memory (people, decisions, ongoing deals, pain points) unless the new call clearly invalidates them.
-- Add NEW durable facts learned in this call: pain points, commitments, products discussed, competitor mentions, follow-ups owed, names introduced.
-- Do NOT include greetings, weather, small talk, or per-call conversational filler.
-- Write in the language of the transcript (Polish if Polish, English if English).
-- When the new call adds nothing durable, return the PRIOR memory unchanged.`
+    const systemPrompt = buildCompanyContextMergePrompt(COPILOT_CONTEXT_MAX_LENGTH)
 
     const userPrompt = `PRIOR MEMORY:
 ${prior}
@@ -347,33 +345,10 @@ ${transcriptText}
 Return only the updated memory document.`
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 800,
-          temperature: 0.2,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userPrompt }],
-        }),
-      })
+      const text = await llm.complete(systemPrompt, userPrompt, { temperature: 0.2, maxTokens: 800 })
+      if (!text) return null
 
-      if (!response.ok) {
-        console.error('[Orchestrator] Context merge API error:', response.status)
-        return null
-      }
-
-      const data = await response.json()
-      const text = data.content?.[0]?.text
-      if (typeof text !== 'string') return null
-
-      // Strip optional markdown fences the model may emit despite instructions.
-      const stripped = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
+      const stripped = text.trim()
       if (stripped.length === 0) return null
       return stripped
     } catch (err) {
@@ -415,8 +390,14 @@ Return only the updated memory document.`
           card = await this.buildPricingAlert(session, triggerText, result.segmentId, result.confidence)
           break
         case 'order_intent':
-          session.recentSuggestionTypes.set(dedupKey, Date.now())
-          return
+          card = await this.buildQuickAction(
+            session,
+            triggerText,
+            result.segmentId,
+            result.confidence,
+            result.keywords,
+          )
+          break
         case 'competitor_mention':
           card = await this.buildPricingAlert(session, triggerText, result.segmentId, result.confidence)
           break
@@ -506,10 +487,14 @@ Return only the updated memory document.`
     triggerText: string,
     triggerSegmentId: number,
     confidence: number,
-    prefill?: QuickActionPrefillResult | null,
+    keywords: string[] = [],
   ): Promise<SuggestionCard> {
+    const suggestionId = this.nextSuggestionId(session)
+    const { lines, extractionMethod } = await this.resolveQuickActionLines(session, keywords, confidence, triggerText)
+    const channelId = await this.resolvePreferredChannelId(session)
+
     return {
-      id: this.nextSuggestionId(session),
+      id: suggestionId,
       type: 'quick_action',
       priority: 'high',
       triggerText,
@@ -517,32 +502,471 @@ Return only the updated memory document.`
       matchConfidence: Math.round(confidence * 100),
       createdAt: Date.now(),
       actions: [
-        { label: 'Utwórz ofertę', actionType: 'create_quote', prefill: { customerId: session.customerId } },
+        {
+          label: 'Utwórz ofertę',
+          actionType: 'create_quote',
+          prefill: {
+            source: {
+              callId: session.callId,
+              suggestionId,
+              triggerSegmentId,
+            },
+            customerId: session.customerId,
+            companyId: session.companyEntityId,
+            channelId,
+            transcriptSummary: summarizeTranscriptSegments(session.contextWindow),
+            detectedIntents: Array.from(session.recentSuggestionTypes.keys()),
+            lines,
+            extractionMethod,
+            note: triggerText || null,
+          },
+        },
         {
           label: 'Zaplanuj follow-up',
           actionType: 'schedule_followup',
           prefill: {
-            ...(prefill?.followUp ?? {
-              customerId: session.customerId,
-              targetEntityId: resolveFollowUpTargetEntityId(session),
-              targetEntityIds: resolveFollowUpTargetEntityIds(session),
-              callId: session.callId,
-              ownerUserId: session.repUserId,
-            }),
+            customerId: session.customerId,
+            targetEntityId: resolveFollowUpTargetEntityId(session),
+            targetEntityIds: resolveFollowUpTargetEntityIds(session),
+            callId: session.callId,
+            ownerUserId: session.repUserId,
           },
         },
         {
           label: 'Dodaj notatkę',
           actionType: 'add_note',
           prefill: {
-            ...(prefill?.note ?? {
-              customerId: session.customerId,
-              targetEntityIds: resolveNoteTargetEntityIds(session),
-              callId: session.callId,
-            }),
+            customerId: session.customerId,
+            targetEntityIds: resolveNoteTargetEntityIds(session),
+            callId: session.callId,
           },
         },
       ],
+    }
+  }
+
+  private getRecentConversationSegments(session: CopilotSession, limit = 16): TranscriptSegment[] {
+    return session.contextWindow
+      .slice(-limit)
+  }
+
+  private buildProductSearchKeywords(segments: TranscriptSegment[], keywords: string[], limit = 8): string[] {
+    // Customer segments first (most recent first), then rep segments.
+    const customerTokens = [...segments]
+      .reverse()
+      .filter((segment) => segment.speaker === 'customer')
+      .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 20))
+
+    const repTokens = [...segments]
+      .reverse()
+      .filter((segment) => segment.speaker === 'rep')
+      .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 12))
+
+    const rawTokens = [
+      ...keywords,
+      ...customerTokens,
+      ...repTokens,
+    ]
+      .map((keyword) => keyword.trim())
+      .filter((keyword) => {
+        if (keyword.length < 3) return false
+        const lowered = keyword.toLocaleLowerCase('pl-PL')
+        return !PL_STOPWORDS.has(lowered)
+      })
+
+    const withStems = rawTokens.flatMap((token) => {
+      const variants = expandStemVariants(token)
+      const stripped = variants.map((v) => stripDiacritics(v))
+      return [...variants, ...stripped]
+    })
+
+    return Array.from(new Set(withStems)).slice(0, limit)
+  }
+
+  private collectProductAliases(product: CopilotProductSearchResult['products'][number]): string[] {
+    return [product.name, product.sku].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  }
+
+  private segmentExplicitProductMentions(
+    segment: TranscriptSegment,
+    product: CopilotProductSearchResult['products'][number],
+  ): boolean {
+    const segmentText = segment.text.toLocaleLowerCase()
+    return this.collectProductAliases(product)
+      .map((alias) => alias.toLocaleLowerCase())
+      .some((alias) => segmentText.includes(alias))
+  }
+
+  private scoreProductAgainstSegment(
+    segment: TranscriptSegment,
+    product: CopilotProductSearchResult['products'][number],
+  ): number {
+    const segmentText = segment.text.toLocaleLowerCase()
+    const aliases = this.collectProductAliases(product).map((alias) => alias.toLocaleLowerCase())
+
+    if (aliases.some((alias) => segmentText.includes(alias))) {
+      return 100
+    }
+
+    const segmentKeywords = extractSearchKeywordsFromText(segment.text, 12).map((keyword) => keyword.toLocaleLowerCase())
+    const productKeywords = extractSearchKeywordsFromText(
+      [product.name, product.sku].filter(Boolean).join(' '),
+      12,
+    ).map((keyword) => keyword.toLocaleLowerCase())
+
+    return productKeywords.reduce((score, keyword) => (
+      segmentKeywords.includes(keyword) ? score + 1 : score
+    ), 0)
+  }
+
+  // Extracts the first balanced {...} JSON object from a raw LLM response.
+  private extractFirstJsonObject(text: string): string | null {
+    if (typeof text !== 'string' || text.length === 0) return null
+    const cleaned = text.replace(/```(?:json)?/gi, '')
+    const start = cleaned.indexOf('{')
+    if (start < 0) return null
+
+    let depth = 0
+    let inString = false
+    let escape = false
+
+    for (let index = start; index < cleaned.length; index += 1) {
+      const char = cleaned[index]
+      if (inString) {
+        if (escape) {
+          escape = false
+        } else if (char === '\\') {
+          escape = true
+        } else if (char === '"') {
+          inString = false
+        }
+        continue
+      }
+
+      if (char === '"') {
+        inString = true
+        continue
+      }
+
+      if (char === '{') {
+        depth += 1
+      } else if (char === '}') {
+        depth -= 1
+        if (depth === 0) {
+          return cleaned.slice(start, index + 1)
+        }
+      }
+    }
+
+    return null
+  }
+
+  private async extractQuoteLinesViaLlm(
+    session: CopilotSession,
+    candidateProducts: CopilotProductSearchResult['products'],
+    segments: TranscriptSegment[],
+    confidence: number,
+    triggerText: string,
+  ): Promise<VoiceCreateQuotePrefill['lines'] | null> {
+    if (!candidateProducts?.length || !segments.length) {
+      console.warn('[Orchestrator] extractQuoteLinesViaLlm: no candidate products or segments', {
+        callId: session.callId,
+        candidateProducts: candidateProducts?.length ?? 0,
+        segments: segments.length,
+      })
+      return null
+    }
+
+    const topCandidates = candidateProducts.slice(0, 40)
+    const catalogPayload = topCandidates.map((product) => ({
+      id: product.id,
+      title: product.name,
+      sku: product.sku ?? null,
+    }))
+
+    const transcriptText = segments
+      .map((segment, index) => `#${index + 1} [${segment.speaker}] ${segment.text.trim()}`)
+      .join('\n')
+      .slice(0, 6000)
+
+    const systemPrompt = QUOTE_EXTRACTION_SYSTEM_PROMPT
+
+    const catalogJson = JSON.stringify(catalogPayload)
+    const userPrompt = `CATALOG (only these product ids are valid):
+${catalogJson}
+
+TRANSCRIPT (ordered, #N is segment index, [speaker] = rep or customer):
+${transcriptText}
+
+Return the JSON object now.`
+
+    if (PROFILE_ENABLED) console.log('[copilot:profile] extractQuoteLinesViaLlm: calling LLM', {
+      callId: session.callId,
+      candidateProducts: catalogPayload.length,
+      transcriptSegments: segments.length,
+      transcriptChars: transcriptText.length,
+    })
+
+    try {
+      const llm = this.container.resolve<LlmClient>('llmClient')
+      const text = await llm.complete(systemPrompt, userPrompt, { temperature: 0, maxTokens: 800 })
+      if (!text) return null
+
+      if (PROFILE_ENABLED) console.log('[copilot:profile] extractQuoteLinesViaLlm: raw response', text.slice(0, 600))
+
+      const jsonBlock = this.extractFirstJsonObject(text)
+      if (!jsonBlock) {
+        console.error('[Orchestrator] Quote extraction: no JSON object in response', text.slice(0, 500))
+        return null
+      }
+
+      let rawJson: unknown
+      try {
+        rawJson = JSON.parse(jsonBlock)
+      } catch {
+        console.error('[copilot] Quote extraction: JSON parse failed')
+        return null
+      }
+
+      const parseResult = quoteLlmResponseSchema.safeParse(rawJson)
+      if (!parseResult.success) {
+        console.error('[copilot] LLM response validation failed', parseResult.error.issues)
+        return null
+      }
+
+      const rankedProductIds = new Set(topCandidates.map((p) => p.id))
+      const lines: VoiceCreateQuotePrefill['lines'] = parseResult.data.lines
+        .filter((line) => rankedProductIds.has(line.productId))
+        .map((line) => ({
+          productId: line.productId,
+          quantity: line.quantity,
+          note: line.rationale?.slice(0, 500) ?? triggerText?.trim() ?? null,
+          confidence: Math.round(line.confidence * 100) / 100,
+        }))
+
+      if (PROFILE_ENABLED) console.log('[copilot:profile] extractQuoteLinesViaLlm: parsed lines', {
+        callId: session.callId,
+        rawLineCount: parseResult.data.lines.length,
+        acceptedLineCount: lines.length,
+        lines: lines.map((line) => ({ productId: line.productId, quantity: line.quantity })),
+      })
+
+      return lines.length > 0 ? lines : null
+    } catch (err) {
+      console.error('[Orchestrator] Quote extraction failed:', err)
+      return null
+    }
+  }
+
+  private async resolveQuickActionLines(
+    session: CopilotSession,
+    keywords: string[],
+    confidence: number,
+    triggerText: string,
+  ): Promise<{ lines: VoiceCreateQuotePrefill['lines']; extractionMethod: 'llm' | 'heuristic' | 'heuristic_fallback' }> {
+    const conversationSegments = this.getRecentConversationSegments(session)
+    const customerText = conversationSegments
+      .filter((s) => s.speaker === 'customer')
+      .map((s) => s.text)
+      .join(' ')
+    const aggregateKeywords = this.buildProductSearchKeywords(conversationSegments, keywords, 60)
+
+    console.log('[DEBUG:quote] aggregateKeywords', aggregateKeywords.slice(0, 30))
+
+    const candidates = aggregateKeywords.length > 0
+      ? await this.callMcpTool<CopilotProductSearchResult>(
+          'copilot_search_products',
+          {
+            keywords: aggregateKeywords,
+            customerId: session.customerId,
+            limit: 40,
+            context: customerText,
+          },
+          session,
+        )
+      : null
+
+    const llmCandidates = candidates?.products ?? []
+
+    console.log('[DEBUG:quote] search returned', llmCandidates.length, 'products:', llmCandidates.map((p) => p.name))
+
+    const llmLines = await this.extractQuoteLinesViaLlm(
+      session,
+      llmCandidates,
+      conversationSegments,
+      confidence,
+      triggerText,
+    )
+
+    console.log('[DEBUG:quote] llmLines result:', llmLines?.length ?? 'null', llmLines?.map((l) => ({ pid: l.productId, qty: l.quantity })))
+
+    if (llmLines && llmLines.length > 0) {
+      session.lastProductId = llmLines[0]?.productId ?? session.lastProductId
+      return { lines: llmLines, extractionMethod: 'llm' as const }
+    }
+
+    const linesByProductId = new Map<string, VoiceCreateQuotePrefill['lines'][number]>()
+    const candidateProductsBySegment = new Map<number, CopilotProductSearchResult['products']>()
+
+    console.log('[DEBUG:quote] entering heuristic path, segments:', conversationSegments.length)
+
+    for (const segment of conversationSegments) {
+      const segmentKeywords = extractSearchKeywordsFromText(segment.text, 8)
+      console.log('[DEBUG:quote] segment', segment.segmentId, segment.speaker, ':', segment.text.slice(0, 100), '→ keywords:', segmentKeywords)
+      const segmentProducts = segmentKeywords.length > 0
+        ? await this.callMcpTool<CopilotProductSearchResult>(
+            'copilot_search_products',
+            {
+              keywords: segmentKeywords,
+              customerId: session.customerId,
+              limit: 5,
+            },
+            session,
+          )
+        : null
+
+      console.log('[DEBUG:quote] segment', segment.segmentId, 'search returned:', segmentProducts?.products?.map((p) => p.name) ?? 'null')
+
+      const candidateProducts = Array.from(
+        new Map(
+          [...(segmentProducts?.products ?? []), ...(candidates?.products ?? [])]
+            .map((product) => [product.id, product]),
+        ).values(),
+      )
+      candidateProductsBySegment.set(segment.segmentId, candidateProducts)
+
+      for (const product of candidateProducts) {
+        const score = this.scoreProductAgainstSegment(segment, product)
+        const aliases = this.collectProductAliases(product)
+        const quantity = score >= 2 ? extractQuantityNearAliases(segment.text, aliases) : null
+        console.log('[DEBUG:quote] product', product.name, 'score:', score, 'aliases:', aliases, 'quantity:', quantity)
+        if (score < 2) continue
+        if (quantity == null) continue
+
+        linesByProductId.set(product.id, {
+          productId: product.id,
+          quantity,
+          note: segment.text.trim() || triggerText || null,
+          confidence: Math.round(confidence * 100) / 100,
+        })
+      }
+    }
+
+    console.log('[DEBUG:quote] heuristic linesByProductId:', Array.from(linesByProductId.entries()).map(([id, l]) => ({ id, qty: l.quantity })))
+
+    for (let index = 0; index < conversationSegments.length; index += 1) {
+      const segment = conversationSegments[index]
+      const candidateProducts = candidateProductsBySegment.get(segment.segmentId) ?? []
+      const explicitProducts = candidateProducts.filter((product) => this.segmentExplicitProductMentions(segment, product))
+
+      if (explicitProducts.length !== 1) continue
+      const explicitProduct = explicitProducts[0]
+      if (linesByProductId.has(explicitProduct.id)) continue
+
+      const nearbySegments = [
+        conversationSegments[index - 1],
+        conversationSegments[index + 1],
+        conversationSegments[index + 2],
+      ].filter((value): value is TranscriptSegment => Boolean(value))
+
+      for (const nearbySegment of nearbySegments) {
+        const nearbyCandidates = candidateProductsBySegment.get(nearbySegment.segmentId) ?? []
+        const nearbyExplicitProducts = nearbyCandidates.filter((product) => this.segmentExplicitProductMentions(nearbySegment, product))
+        if (nearbyExplicitProducts.length > 0) continue
+
+        const quantity = inferQuantityFromText(nearbySegment.text)
+        if (quantity == null) continue
+
+        linesByProductId.set(explicitProduct.id, {
+          productId: explicitProduct.id,
+          quantity,
+          note: `${segment.text.trim()} ${nearbySegment.text.trim()}`.trim() || triggerText || null,
+          confidence: Math.round(confidence * 100) / 100,
+        })
+        break
+      }
+    }
+
+    const heuristicMethod = this.hasLlmClient() ? 'heuristic_fallback' as const : 'heuristic' as const
+
+    if (linesByProductId.size === 0) {
+      const productId = await this.resolveQuickActionProductId(session, keywords)
+      const quantity = inferQuantityFromSegments(conversationSegments.slice(-6)) ?? 1
+      if (productId) {
+        session.lastProductId = productId
+        return {
+          lines: [
+            {
+              productId,
+              quantity,
+              note: triggerText || null,
+              confidence: Math.round(confidence * 100) / 100,
+            },
+          ],
+          extractionMethod: heuristicMethod,
+        }
+      }
+      return { lines: [], extractionMethod: heuristicMethod }
+    }
+
+    const lines = Array.from(linesByProductId.values())
+    session.lastProductId = lines[0]?.productId ?? session.lastProductId
+    return { lines, extractionMethod: heuristicMethod }
+  }
+
+  private hasLlmClient(): boolean {
+    try {
+      return !!this.container.resolve<unknown>('llmClient')
+    } catch {
+      return false
+    }
+  }
+
+  private async resolveQuickActionProductId(session: CopilotSession, keywords: string[]): Promise<string | null> {
+    if (session.lastProductId) return session.lastProductId
+
+    const searchKeywords = this.buildProductSearchKeywords(this.getRecentConversationSegments(session, 8), keywords, 8)
+
+    if (searchKeywords.length === 0) return null
+
+    const toolResult = await this.callMcpTool<CopilotProductSearchResult>(
+      'copilot_search_products',
+      {
+        keywords: searchKeywords,
+        customerId: session.customerId,
+        limit: 1,
+      },
+      session,
+    )
+
+    const productId = toolResult?.products?.[0]?.id ?? null
+    if (productId) session.lastProductId = productId
+    return productId
+  }
+
+  private async resolvePreferredChannelId(session: CopilotSession): Promise<string | null> {
+    try {
+      const em = this.container.resolve<EntityManager>('em').fork()
+      const channels = await em.find(
+        SalesChannel,
+        {
+          organizationId: session.organizationId,
+          tenantId: session.tenantId,
+          isActive: true,
+          deletedAt: null,
+        },
+        {
+          orderBy: { createdAt: 'ASC' },
+        },
+      )
+
+      if (channels.length === 1) return channels[0]?.id ?? null
+
+      const demoChannel = channels.find((channel) => channel.code === 'voice_channels_demo')
+      return demoChannel?.id ?? null
+    } catch (err) {
+      console.error('[Orchestrator] Failed to resolve preferred channel:', err)
+      return null
     }
   }
 
@@ -702,11 +1126,6 @@ Return only the updated memory document.`
           ctx: commandContext,
         })
 
-        console.log('[Orchestrator] registerCallActivity: call activity created', {
-          callId: session.callId,
-          entityId: targetId,
-          interactionId: result?.interactionId ?? null,
-        })
       } catch (err) {
         console.error('[Orchestrator] registerCallActivity: failed for target', {
           callId: session.callId,

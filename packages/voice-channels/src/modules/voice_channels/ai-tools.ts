@@ -441,7 +441,7 @@ Returns matching products with scoped pricing, category, and stock metadata for 
       .number()
       .int()
       .min(1)
-      .max(10)
+      .max(50)
       .optional()
       .default(3)
       .describe("Maximum number of products to return"),
