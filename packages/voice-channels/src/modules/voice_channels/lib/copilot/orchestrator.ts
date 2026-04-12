@@ -13,6 +13,7 @@ import type {
 } from '@open-mercato/voice-channels/modules/voice_channels/types'
 import { IntentDetector } from './intent-detector'
 import type { LlmClient } from './llmClient'
+import { quoteLlmResponseSchema } from '../../data/validators'
 import { emitVoiceEvent } from '../../events'
 import aiTools from '../../ai-tools'
 import {
@@ -822,66 +823,33 @@ Return the JSON object now.`
         return null
       }
 
-      let parsed: unknown
+      let rawJson: unknown
       try {
-        parsed = JSON.parse(jsonBlock)
-      } catch (err) {
-        console.error('[Orchestrator] Quote extraction JSON parse failed', {
-          error: err instanceof Error ? err.message : String(err),
-          jsonBlock: jsonBlock.slice(0, 500),
-        })
+        rawJson = JSON.parse(jsonBlock)
+      } catch {
+        console.error('[copilot] Quote extraction: JSON parse failed')
         return null
       }
 
-      const rawLines =
-        parsed && typeof parsed === 'object' && 'lines' in parsed && Array.isArray((parsed as any).lines)
-          ? ((parsed as any).lines as unknown[])
-          : []
-      if (rawLines.length === 0) {
-        console.warn('[Orchestrator] Quote extraction: LLM returned zero lines')
+      const parseResult = quoteLlmResponseSchema.safeParse(rawJson)
+      if (!parseResult.success) {
+        console.error('[copilot] LLM response validation failed', parseResult.error.issues)
         return null
       }
 
-      const validIds = new Set(topCandidates.map((product) => product.id))
-      const fallbackConfidence = Math.max(0, Math.min(1, confidence || 0))
-      const triggerNote = triggerText?.trim() || null
-      const lines: VoiceCreateQuotePrefill['lines'] = []
-
-      for (const entry of rawLines) {
-        if (!entry || typeof entry !== 'object') continue
-        const record = entry as Record<string, unknown>
-        const productId = typeof record.productId === 'string' ? record.productId : null
-        if (!productId || !validIds.has(productId)) continue
-
-        const quantityRaw = record.quantity
-        const quantity =
-          typeof quantityRaw === 'number' && Number.isFinite(quantityRaw) && quantityRaw > 0
-            ? quantityRaw
-            : null
-        if (quantity == null) continue
-
-        const confidenceRaw = record.confidence
-        const normalizedConfidence =
-          typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw)
-            ? Math.max(0, Math.min(1, confidenceRaw))
-            : fallbackConfidence
-
-        const rationale =
-          typeof record.rationale === 'string' && record.rationale.trim().length > 0
-            ? record.rationale.trim().slice(0, 500)
-            : null
-
-        lines.push({
-          productId,
-          quantity,
-          note: rationale ?? triggerNote,
-          confidence: Math.round(normalizedConfidence * 100) / 100,
-        })
-      }
+      const rankedProductIds = new Set(topCandidates.map((p) => p.id))
+      const lines: VoiceCreateQuotePrefill['lines'] = parseResult.data.lines
+        .filter((line) => rankedProductIds.has(line.productId))
+        .map((line) => ({
+          productId: line.productId,
+          quantity: line.quantity,
+          note: line.rationale?.slice(0, 500) ?? triggerText?.trim() ?? null,
+          confidence: Math.round(line.confidence * 100) / 100,
+        }))
 
       console.log('[Orchestrator] extractQuoteLinesViaLlm: parsed lines', {
         callId: session.callId,
-        rawLineCount: rawLines.length,
+        rawLineCount: parseResult.data.lines.length,
         acceptedLineCount: lines.length,
         lines: lines.map((line) => ({ productId: line.productId, quantity: line.quantity })),
       })
