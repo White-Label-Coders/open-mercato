@@ -282,12 +282,15 @@ export class CopilotOrchestrator {
     }
 
     try {
+      const endSessionKeywords = session.contextWindow
+        .filter((s) => s.speaker === 'customer')
+        .flatMap((s) => extractSearchKeywordsFromText(s.text, 20))
       const finalQuickAction = await this.buildQuickAction(
         session,
         'Podsumowanie rozmowy',
         0,
         1,
-        prefill,
+        endSessionKeywords,
       )
       finalQuickAction.detectedIntent = 'Szybkie akcje po rozmowie'
       await this.emitSuggestion(session, finalQuickAction)
