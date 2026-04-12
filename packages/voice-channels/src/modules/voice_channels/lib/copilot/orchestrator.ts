@@ -12,6 +12,7 @@ import type {
   VoiceCreateQuotePrefill,
 } from '@open-mercato/voice-channels/modules/voice_channels/types'
 import { IntentDetector } from './intent-detector'
+import type { LlmClient } from './llmClient'
 import { emitVoiceEvent } from '../../events'
 import aiTools from '../../ai-tools'
 import {
@@ -24,15 +25,38 @@ import type { EntityManager } from '@mikro-orm/core'
 import type { CommandBus, CommandRuntimeContext } from '@open-mercato/shared/lib/commands'
 import { CUSTOMER_INTERACTION_ACTIVITY_ADAPTER_SOURCE } from '@open-mercato/core/modules/customers/lib/interactionCompatibility'
 import { SalesChannel } from '@open-mercato/core/modules/sales/data/entities'
+import { CatalogProduct } from '@open-mercato/core/modules/catalog/data/entities'
 import {
   extractQuantityNearAliases,
   extractSearchKeywordsFromText,
   inferQuantityFromSegments,
+  inferQuantityFromText,
   summarizeTranscriptSegments,
 } from './quickActionDrafts'
 
 const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
   Object.fromEntries(aiTools.map((tool) => [tool.name, tool.handler as any]))
+
+// Polish filler tokens that must not seed the catalog search fallback. If these
+// leak into the OR-pattern the query matches every product with a random vowel.
+const PL_STOPWORDS = new Set([
+  'dzień', 'dobry', 'dzien', 'panie', 'pani', 'proszę', 'prosze',
+  'dziękuję', 'dziekuje', 'dzwonię', 'dzwonie', 'dobrze', 'tak', 'nie',
+  'bardzo', 'sprawie', 'państwa', 'panstwa', 'państwo', 'panstwo',
+  'kwartał', 'kwartal', 'teraz', 'jak', 'co', 'czy', 'się', 'sie',
+  'jest', 'są', 'są', 'być', 'byc', 'mamy', 'mam', 'masz', 'ma',
+  'potrzebujemy', 'potrzebuję', 'potrzebuje', 'ale', 'bo', 'bardzo',
+  'doskonale', 'rozumiem', 'sprawdzam', 'sprawdzę', 'sprawdze',
+  'obawy', 'przygotowuję', 'przygotowuje', 'świetnie', 'swietnie',
+  'obawy', 'chwilę', 'chwile', 'później', 'pozniej', 'teraz',
+  'ofertę', 'oferty', 'oferta', 'ofertą', 'akceptacji', 'akceptacja',
+  'zamawiam', 'zamówienie', 'zamowienie', 'zamówienia', 'zamowienia',
+  'ewa', 'jan', 'kowalski', 'janie', 'ewo', 'panie', 'janem',
+  'open', 'mercato', 'dzwonię', 'dzwonie', 'pln', 'euro',
+  'około', 'okolo', 'chyba', 'jeszcze', 'razie', 'takim', 'dobra',
+  'procent', 'rabatu', 'promocja', 'promocje', 'cena', 'ceny',
+  'godzin', 'godziny', 'certyfikację', 'certyfikacja',
+])
 
 /**
  * Copilot Orchestrator
@@ -96,7 +120,7 @@ export class CopilotOrchestrator {
 
   constructor(container: AppContainer) {
     this.container = container
-    this.intentDetector = new IntentDetector()
+    this.intentDetector = new IntentDetector(container)
   }
 
   /**
@@ -273,11 +297,7 @@ export class CopilotOrchestrator {
    * or returns nothing useful.
    */
   private async mergeCompanyContext(session: CopilotSession): Promise<string | null> {
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
-      console.warn('[Orchestrator] No ANTHROPIC_API_KEY — skipping company context merge')
-      return null
-    }
+    const llm = this.container.resolve<LlmClient>('llmClient')
 
     const prior = session.companyContext?.trim() || '(empty)'
     const intentSummary = Array.from(session.recentSuggestionTypes.keys()).join(', ') || '(none detected)'
@@ -312,33 +332,10 @@ ${transcriptText}
 Return only the updated memory document.`
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 800,
-          temperature: 0.2,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userPrompt }],
-        }),
-      })
+      const text = await llm.complete(systemPrompt, userPrompt, { temperature: 0.2, maxTokens: 800 })
+      if (!text) return null
 
-      if (!response.ok) {
-        console.error('[Orchestrator] Context merge API error:', response.status)
-        return null
-      }
-
-      const data = await response.json()
-      const text = data.content?.[0]?.text
-      if (typeof text !== 'string') return null
-
-      // Strip optional markdown fences the model may emit despite instructions.
-      const stripped = text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
+      const stripped = text.trim()
       if (stripped.length === 0) return null
       return stripped
     } catch (err) {
@@ -521,11 +518,26 @@ Return only the updated memory document.`
   }
 
   private buildProductSearchKeywords(segments: TranscriptSegment[], keywords: string[], limit = 8): string[] {
+    // Prefer tokens from CUSTOMER segments (the buyer names the products) over
+    // rep greetings/small-talk. Reverse so the most recent customer turns seed
+    // the keyword set first — quote extraction happens on the final order turn,
+    // so its product words matter more than the opener "Dzień dobry".
+    const customerTokens = [...segments]
+      .reverse()
+      .filter((segment) => segment.speaker === 'customer')
+      .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 20))
+
+    const repTokens = [...segments]
+      .reverse()
+      .filter((segment) => segment.speaker === 'rep')
+      .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 12))
+
     return Array.from(
       new Set(
         [
           ...keywords,
-          ...segments.flatMap((segment) => extractSearchKeywordsFromText(segment.text, limit)),
+          ...customerTokens,
+          ...repTokens,
         ]
           .map((keyword) => keyword.trim())
           .filter((keyword) => keyword.length > 0),
@@ -569,6 +581,395 @@ Return only the updated memory document.`
     ), 0)
   }
 
+  // Scans a raw LLM response for the first balanced `{...}` JSON object and
+  // returns it. Tolerates leading prose, trailing commentary, code fences,
+  // and the "Actually, re-evaluating:" follow-ups that Claude sometimes emits
+  // after completing the requested JSON. Strings and escapes are respected
+  // so braces inside quoted rationale text don't throw off the brace counter.
+  private extractFirstJsonObject(text: string): string | null {
+    if (typeof text !== 'string' || text.length === 0) return null
+    const cleaned = text.replace(/```(?:json)?/gi, '')
+    const start = cleaned.indexOf('{')
+    if (start < 0) return null
+
+    let depth = 0
+    let inString = false
+    let escape = false
+
+    for (let index = start; index < cleaned.length; index += 1) {
+      const char = cleaned[index]
+      if (inString) {
+        if (escape) {
+          escape = false
+        } else if (char === '\\') {
+          escape = true
+        } else if (char === '"') {
+          inString = false
+        }
+        continue
+      }
+
+      if (char === '"') {
+        inString = true
+        continue
+      }
+
+      if (char === '{') {
+        depth += 1
+      } else if (char === '}') {
+        depth -= 1
+        if (depth === 0) {
+          return cleaned.slice(start, index + 1)
+        }
+      }
+    }
+
+    return null
+  }
+
+  private async extractQuoteLinesViaLlm(
+    session: CopilotSession,
+    candidateProducts: CopilotProductSearchResult['products'],
+    segments: TranscriptSegment[],
+    confidence: number,
+    triggerText: string,
+  ): Promise<VoiceCreateQuotePrefill['lines'] | null> {
+    if (!candidateProducts?.length || !segments.length) {
+      console.warn('[Orchestrator] extractQuoteLinesViaLlm: no candidate products or segments', {
+        callId: session.callId,
+        candidateProducts: candidateProducts?.length ?? 0,
+        segments: segments.length,
+      })
+      return null
+    }
+
+    // Score each candidate by how many distinctive customer tokens appear in
+    // its title/sku (stem-stripped and lowercased). Sort descending so the
+    // most relevant rows come first, then slice. This keeps the LLM's catalog
+    // view focused — alphabetical fittings are pushed to the tail.
+    const customerTokens = new Set(
+      segments
+        .filter((segment) => segment.speaker === 'customer')
+        .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 30))
+        .map((token) => token.trim().toLocaleLowerCase('pl-PL'))
+        .filter((token) => token.length >= 3 && !PL_STOPWORDS.has(token)),
+    )
+    const STEM_SUFFIXES = ['owych', 'owego', 'owej', 'ami', 'ach', 'ego', 'ów', 'ow', 'om', 'y', 'i', 'a', 'e']
+    const expandedCustomerTokens = new Set<string>()
+    for (const token of customerTokens) {
+      expandedCustomerTokens.add(token)
+      for (const suffix of STEM_SUFFIXES) {
+        if (token.length > suffix.length + 2 && token.endsWith(suffix)) {
+          expandedCustomerTokens.add(token.slice(0, -suffix.length))
+          break
+        }
+      }
+    }
+
+    const scoreCandidate = (product: CopilotProductSearchResult['products'][number]): number => {
+      const haystack = `${product.name} ${product.sku ?? ''}`.toLocaleLowerCase('pl-PL')
+      let score = 0
+      for (const token of expandedCustomerTokens) {
+        if (haystack.includes(token)) score += 1
+      }
+      return score
+    }
+
+    const rankedCandidates = [...candidateProducts]
+      .map((product) => ({ product, score: scoreCandidate(product) }))
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score
+        return left.product.name.localeCompare(right.product.name, 'pl')
+      })
+      .map((entry) => entry.product)
+
+    const topCandidates = rankedCandidates.slice(0, 40)
+    const catalogPayload = topCandidates.map((product) => ({
+      id: product.id,
+      title: product.name,
+      sku: product.sku ?? null,
+      price: product.price ?? null,
+      stock: product.stockQuantity ?? null,
+    }))
+
+    console.log('[Orchestrator] extractQuoteLinesViaLlm: ranked catalog', {
+      callId: session.callId,
+      totalCandidates: candidateProducts.length,
+      sentToLlm: topCandidates.length,
+      topScores: rankedCandidates.slice(0, 10).map((product) => ({
+        title: product.name,
+        score: scoreCandidate(product),
+      })),
+    })
+
+    const transcriptText = segments
+      .map((segment, index) => `#${index + 1} [${segment.speaker}] ${segment.text.trim()}`)
+      .join('\n')
+      .slice(0, 6000)
+
+    const systemPrompt = `You are a B2B sales-call transcript analyzer. Your single job is to extract the ORDER LINE ITEMS the customer actually committed to buy during the call, and map each one to a catalog product id from the CATALOG list supplied in the user message.
+
+OUTPUT CONTRACT (strict)
+- Return ONLY a JSON object. No markdown, no prose, no code fences, no trailing commentary.
+- Shape: {"lines":[{"productId":"<catalog id>","quantity":<positive integer>,"confidence":<0..1>,"rationale":"<short sentence>"}]}
+- Every productId MUST appear verbatim in the CATALOG. NEVER invent ids. NEVER output an id that is not in CATALOG.
+- If the customer did not commit to any purchase, return {"lines":[]}.
+
+STEP-BY-STEP EXTRACTION PROCEDURE (follow in this exact order)
+1. Find the FINAL authoritative order turn — typically the customer's last utterance that contains verbs like "zamawiam" / "biorę" / "I order" / "we'll take" / "send us". This overrides any earlier hedged statements.
+2. Inside that final turn, split the utterance on coordinating conjunctions: "i", "oraz", "plus", "a także", "and", commas that separate products. Each segment names ONE product.
+3. For EACH segment: extract the quantity, the product type (e.g. "rura", "zawór", "kształtka"), AND every modifier that narrows the product (material like "stalowa"/"nierdzewna", shape like "kulowy"/"zwrotny", size like "DN25"/"DN50", pressure like "PN16").
+4. For EACH segment: pick the ONE catalog product whose title contains ALL the modifiers the customer mentioned. Never drop a modifier. Never substitute a different material or spec.
+5. Output one line per segment. If step 4 returns zero catalog matches, skip that segment (do not guess).
+
+MULTI-ITEM RULE (critical — never collapse)
+- A single sentence with "X i Y" ALWAYS produces TWO lines, one per product.
+- Never skip the second product just because the first was already mapped.
+- Never merge two products into a single line by combining their quantities.
+
+QUANTITY EXTRACTION
+- Convert word-form numbers (Polish or English) to digits BEFORE outputting:
+  zero=0, jeden/jedna/jedno=1, dwa/dwie=2, trzy=3, cztery=4, pięć=5, sześć=6, siedem=7, osiem=8, dziewięć=9,
+  dziesięć=10, jedenaście=11, dwanaście=12, ..., dziewiętnaście=19,
+  dwadzieścia=20, trzydzieści=30, ..., dziewięćdziesiąt=90,
+  sto=100, dwieście=200, trzysta=300, czterysta=400, pięćset=500, sześćset=600, siedemset=700, osiemset=800, dziewięćset=900,
+  tysiąc=1000, "dwa tysiące"=2000, "pięć tysięcy"=5000.
+  English: "five hundred"=500, "two hundred"=200, "one thousand"=1000.
+  Combine compound phrases: "sto dwadzieścia"=120, "dwa tysiące pięćset"=2500.
+- Strip hedging words around the number: "około", "mniej więcej", "chyba", "z", "jakieś", "ponad", "prawie", "about", "approximately", "roughly", "around". The stated number stands.
+- If the customer hedges first ("około pięćset") and then confirms a final count ("zamawiam pięćset"), use the CONFIRMED count.
+
+NOT-A-QUANTITY (hard exclusions — NEVER use these as line quantities)
+- Numbers inside product codes: "DN50", "DN25", "DN80", "PN16", "PN25", "PN-EN".
+- Time windows and delivery SLAs: "48 godzin", "dwa tygodnie", "za 2 dni", "w ciągu godziny", "on 2026-04-15", "Q1".
+- Percentages and discounts: "12 procent", "12%", "dziesięć procent", "10%", "rabat 8%", "osiem procent".
+- Money amounts and lifetime value: "20 tysięcy złotych", "142 tys. PLN", "20k zł", "€1500", "1675 zł".
+- Certifications and standards: "PN-EN", "ISO 9001".
+- Counts of past events: "20 zamówień w ciągu roku", "3 miesiące".
+These are metadata. They must never appear as the "quantity" field on any line.
+
+PRODUCT MATCHING (spec preservation)
+- Every modifier the customer says ("stalowa", "nierdzewna", "kulowy", "zwrotny", "DN50", "DN25", "PN16") is a HARD filter.
+- "rura stalowa DN50" MUST be matched to a title containing BOTH "stalowa" AND "DN50". It MUST NOT be matched to "Rura nierdzewna DN50" or "Rura stalowa DN25".
+- "zawór kulowy DN25" MUST be matched to a title containing "kulowy" AND "DN25". It MUST NOT be matched to "Zawór zwrotny DN25" or "Zawór kulowy DN50".
+- When the catalog has multiple pressure variants (PN16 vs PN25) and the customer does not state a pressure, prefer PN16 (the more common default).
+- If no catalog row matches all required modifiers, SKIP the item. Do not fall back to a "similar" product.
+
+SOURCE EXCLUSIONS (who said it)
+- Only the CUSTOMER's own commitments count. Ignore products the REP proposes, suggests, or merely confirms availability for.
+- Ignore products mentioned in competitor comparisons (e.g. "Stalmet daje nam 10%").
+- Ignore products the customer explicitly rejects or defers.
+
+WORKED EXAMPLE (this is close to a real demo; use it as a reference)
+Transcript (excerpt):
+  #4 [customer] Potrzebujemy rur stalowych DN50, około pięćset sztuk. I jeszcze chyba z dwieście zaworów kulowych DN25.
+  #13 [rep] Rury mamy na stanie, wysyłka w 48 godzin. Zawory DN25 — sprawdzę.
+  #14 [customer] Dobra, w takim razie zamawiam. Pięćset rur DN50 i dwieście zaworów kulowych DN25. Proszę przygotować ofertę.
+CATALOG (excerpt):
+  {"id":"<id-a>","title":"Rura stalowa DN50 PN16"}
+  {"id":"<id-b>","title":"Rura stalowa DN25 PN16"}
+  {"id":"<id-c>","title":"Rura nierdzewna DN50"}
+  {"id":"<id-d>","title":"Rura nierdzewna DN25"}
+  {"id":"<id-e>","title":"Zawór kulowy DN25"}
+  {"id":"<id-f>","title":"Zawór kulowy DN50"}
+  {"id":"<id-g>","title":"Zawór zwrotny DN25"}
+Correct output:
+  {"lines":[
+    {"productId":"<id-a>","quantity":500,"confidence":0.98,"rationale":"Segment #14: 'Pięćset rur DN50' → rura stalowa DN50 PN16"},
+    {"productId":"<id-e>","quantity":200,"confidence":0.98,"rationale":"Segment #14: 'dwieście zaworów kulowych DN25' → zawór kulowy DN25"}
+  ]}
+Why NOT {"id":"<id-d>","quantity":48}: "48" is inside "wysyłka w 48 godzin" (delivery SLA, not a quantity), "<id-d>" is nierdzewna (wrong material), and the customer's committed order is in segment #14 not segment #13.
+
+CONFIDENCE SCALE
+- 0.95-1.00: explicit quantity + explicit spec + exact single catalog match.
+- 0.75-0.94: order is confirmed but one field was mildly inferred (e.g. pressure variant defaulted to PN16).
+- 0.40-0.74: partial evidence, keep only if you are sure the item was actually ordered.
+- below 0.40: skip the item entirely — do NOT output the line.
+
+FINAL OUTPUT DISCIPLINE
+- After emitting the JSON object, STOP. Do not add "Actually", "Note:", "Re-evaluating:", or any other commentary. The JSON is the entire response.
+- If you believe the catalog is insufficient, still emit {"lines":[]} — no prose explanation.
+- Never prepend or append anything to the JSON. No markdown. No backticks. No trailing newlines with text.
+
+Output only the JSON object. No preamble. No postamble.`
+
+    const catalogJson = JSON.stringify(catalogPayload)
+    const userPrompt = `CATALOG (only these product ids are valid):
+${catalogJson}
+
+TRANSCRIPT (ordered, #N is segment index, [speaker] = rep or customer):
+${transcriptText}
+
+Return the JSON object now.`
+
+    console.log('[Orchestrator] extractQuoteLinesViaLlm: calling LLM', {
+      callId: session.callId,
+      candidateProducts: catalogPayload.length,
+      transcriptSegments: segments.length,
+      transcriptChars: transcriptText.length,
+    })
+
+    try {
+      const llm = this.container.resolve<LlmClient>('llmClient')
+      const text = await llm.complete(systemPrompt, userPrompt, { temperature: 0, maxTokens: 800 })
+      if (!text) return null
+
+      console.log('[Orchestrator] extractQuoteLinesViaLlm: raw response', text.slice(0, 600))
+
+      const jsonBlock = this.extractFirstJsonObject(text)
+      if (!jsonBlock) {
+        console.error('[Orchestrator] Quote extraction: no JSON object in response', text.slice(0, 500))
+        return null
+      }
+
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(jsonBlock)
+      } catch (err) {
+        console.error('[Orchestrator] Quote extraction JSON parse failed', {
+          error: err instanceof Error ? err.message : String(err),
+          jsonBlock: jsonBlock.slice(0, 500),
+        })
+        return null
+      }
+
+      const rawLines =
+        parsed && typeof parsed === 'object' && 'lines' in parsed && Array.isArray((parsed as any).lines)
+          ? ((parsed as any).lines as unknown[])
+          : []
+      if (rawLines.length === 0) {
+        console.warn('[Orchestrator] Quote extraction: LLM returned zero lines')
+        return null
+      }
+
+      const validIds = new Set(topCandidates.map((product) => product.id))
+      const fallbackConfidence = Math.max(0, Math.min(1, confidence || 0))
+      const triggerNote = triggerText?.trim() || null
+      const lines: VoiceCreateQuotePrefill['lines'] = []
+
+      for (const entry of rawLines) {
+        if (!entry || typeof entry !== 'object') continue
+        const record = entry as Record<string, unknown>
+        const productId = typeof record.productId === 'string' ? record.productId : null
+        if (!productId || !validIds.has(productId)) continue
+
+        const quantityRaw = record.quantity
+        const quantity =
+          typeof quantityRaw === 'number' && Number.isFinite(quantityRaw) && quantityRaw > 0
+            ? quantityRaw
+            : null
+        if (quantity == null) continue
+
+        const confidenceRaw = record.confidence
+        const normalizedConfidence =
+          typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw)
+            ? Math.max(0, Math.min(1, confidenceRaw))
+            : fallbackConfidence
+
+        const rationale =
+          typeof record.rationale === 'string' && record.rationale.trim().length > 0
+            ? record.rationale.trim().slice(0, 500)
+            : null
+
+        lines.push({
+          productId,
+          quantity,
+          note: rationale ?? triggerNote,
+          confidence: Math.round(normalizedConfidence * 100) / 100,
+        })
+      }
+
+      console.log('[Orchestrator] extractQuoteLinesViaLlm: parsed lines', {
+        callId: session.callId,
+        rawLineCount: rawLines.length,
+        acceptedLineCount: lines.length,
+        lines: lines.map((line) => ({ productId: line.productId, quantity: line.quantity })),
+      })
+
+      return lines.length > 0 ? lines : null
+    } catch (err) {
+      console.error('[Orchestrator] Quote extraction failed:', err)
+      return null
+    }
+  }
+
+  // Seeds the catalog slice that the LLM extractor reasons over. The MCP
+  // copilot_search_products tool is schema-capped at limit 10 AND orders by
+  // title ASC, so alphabetical fittings ("Dennica", "Kolano", "Mufa"...)
+  // consume the slot budget before any pipe/valve row is returned. This helper
+  // bypasses the tool entirely: it builds a Polish-stem-aware OR pattern from
+  // the customer's distinctive tokens and hits `catalog_products` directly.
+  private async fetchCandidateCatalogForLlm(
+    session: CopilotSession,
+    segments: TranscriptSegment[],
+  ): Promise<CopilotProductSearchResult['products']> {
+    const customerTokens = segments
+      .filter((segment) => segment.speaker === 'customer')
+      .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 20))
+      .map((token) => token.trim())
+      .filter((token) => {
+        if (token.length < 3) return false
+        const lowered = token.toLocaleLowerCase('pl-PL')
+        return !PL_STOPWORDS.has(lowered)
+      })
+
+    // Stem trailing Polish inflections so "zaworów"/"kulowych"/"stalowych"
+    // become "zawor"/"kulow"/"stalow", which match catalog titles
+    // "Zawór kulowy" / "Rura stalowa". Keep the original token too.
+    const SUFFIX_STRIPS = ['owych', 'owego', 'owej', 'ami', 'ach', 'ego', 'ów', 'ow', 'om', 'y', 'i', 'a', 'e']
+    const expandedTokens = new Set<string>()
+    for (const token of customerTokens) {
+      expandedTokens.add(token)
+      const lowered = token.toLocaleLowerCase('pl-PL')
+      for (const suffix of SUFFIX_STRIPS) {
+        if (lowered.length > suffix.length + 2 && lowered.endsWith(suffix)) {
+          expandedTokens.add(lowered.slice(0, -suffix.length))
+          break
+        }
+      }
+    }
+
+    const distinctTokens = Array.from(expandedTokens).slice(0, 60)
+    if (distinctTokens.length === 0) return []
+
+    try {
+      const em = this.container.resolve<EntityManager>('em').fork()
+      const escaped = distinctTokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      const pattern = `(?i)(${escaped.join('|')})`
+
+      const products = await em.find(
+        CatalogProduct,
+        {
+          organizationId: session.organizationId,
+          tenantId: session.tenantId,
+          isActive: true,
+          deletedAt: null,
+          $or: [
+            { title: { $re: pattern } },
+            { sku: { $re: pattern } },
+          ],
+        } as any,
+        {
+          orderBy: { title: 'ASC' },
+          limit: 50,
+        },
+      )
+
+      return products.map((product) => ({
+        id: product.id,
+        name: product.title,
+        sku: typeof (product as any).sku === 'string' ? (product as any).sku : '',
+        price: { amount: 0, currency: 'PLN', priceType: 'standard' },
+        available: true,
+        stockQuantity: 0,
+        category: '',
+      }))
+    } catch (err) {
+      console.error('[Orchestrator] fetchCandidateCatalogForLlm failed', err)
+      return []
+    }
+  }
+
   private async resolveQuickActionLines(
     session: CopilotSession,
     keywords: string[],
@@ -576,18 +977,64 @@ Return only the updated memory document.`
     triggerText: string,
   ): Promise<VoiceCreateQuotePrefill['lines']> {
     const conversationSegments = this.getRecentConversationSegments(session)
-    const aggregateKeywords = this.buildProductSearchKeywords(conversationSegments, keywords, 12)
+    const aggregateKeywords = this.buildProductSearchKeywords(conversationSegments, keywords, 60)
     const aggregateProducts = aggregateKeywords.length > 0
       ? await this.callMcpTool<CopilotProductSearchResult>(
           'copilot_search_products',
           {
             keywords: aggregateKeywords,
             customerId: session.customerId,
-            limit: 8,
+            limit: 10,
           },
           session,
         )
       : null
+
+    console.log('[Orchestrator] resolveQuickActionLines: aggregate search', {
+      callId: session.callId,
+      keywordCount: aggregateKeywords.length,
+      topKeywords: aggregateKeywords.slice(0, 20),
+      aggregateProductCount: aggregateProducts?.products?.length ?? 0,
+    })
+
+    // Always seed LLM candidates from the direct catalog fallback. The MCP
+    // copilot_search_products tool is capped at `limit: 10` and uses
+    // `orderBy: { title: 'ASC' }`, which means alphabetical fittings
+    // ("Dennica", "Kolano", "Mufa"...) fill the 10-slot budget and the
+    // pipes ("Rura stalowa DN50 PN16") never make it into the LLM's catalog.
+    // Direct em.find supports a much larger limit and returns every row whose
+    // title/sku matches any distinctive customer token.
+    const directCandidates = await this.fetchCandidateCatalogForLlm(session, conversationSegments)
+    const aggregateCandidateMap = new Map<string, CopilotProductSearchResult['products'][number]>()
+    for (const product of aggregateProducts?.products ?? []) {
+      aggregateCandidateMap.set(product.id, product)
+    }
+    for (const product of directCandidates) {
+      if (!aggregateCandidateMap.has(product.id)) {
+        aggregateCandidateMap.set(product.id, product)
+      }
+    }
+    const llmCandidates = Array.from(aggregateCandidateMap.values())
+
+    console.log('[Orchestrator] resolveQuickActionLines: llm candidate pool', {
+      callId: session.callId,
+      aggregateCount: aggregateProducts?.products?.length ?? 0,
+      directCount: directCandidates.length,
+      totalCandidateCount: llmCandidates.length,
+      sampleTitles: llmCandidates.slice(0, 12).map((product) => product.name),
+    })
+
+    const llmLines = await this.extractQuoteLinesViaLlm(
+      session,
+      llmCandidates,
+      conversationSegments,
+      confidence,
+      triggerText,
+    )
+    if (llmLines && llmLines.length > 0) {
+      session.lastProductId = llmLines[0]?.productId ?? session.lastProductId
+      return llmLines
+    }
 
     const linesByProductId = new Map<string, VoiceCreateQuotePrefill['lines'][number]>()
     const candidateProductsBySegment = new Map<number, CopilotProductSearchResult['products']>()

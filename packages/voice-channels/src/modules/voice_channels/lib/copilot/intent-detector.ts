@@ -1,4 +1,5 @@
 import type { TranscriptSegment, CopilotIntent, IntentDetectionResult } from '@open-mercato/voice-channels/modules/voice_channels/types'
+import type { LlmClient } from './llmClient'
 
 /**
  * Keyword patterns for fast-track intent detection.
@@ -47,6 +48,12 @@ const KEYWORD_PATTERNS: Record<CopilotIntent, RegExp[]> = {
 }
 
 export class IntentDetector {
+  private container: { resolve: <T = unknown>(name: string) => T }
+
+  constructor(container: { resolve: <T = unknown>(name: string) => T }) {
+    this.container = container
+  }
+
   /**
    * Fast-track: keyword-based intent detection.
    * Returns within microseconds. Use for demo reliability.
@@ -139,84 +146,22 @@ LATEST customer message to classify:
 
   private async callLlm(
     systemPrompt: string,
-    userPrompt: string
+    userPrompt: string,
   ): Promise<{ intent: CopilotIntent; confidence: number; keywords: string[] } | null> {
-    // Implementation depends on available AI service in the container.
-    // For hackathon, use direct fetch to Anthropic API:
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
-      console.warn('[IntentDetector] No ANTHROPIC_API_KEY — LLM intent detection disabled')
-      return null
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-    })
-
-    if (!response.ok) {
-      console.error('[IntentDetector] API error:', response.status)
-      return null
-    }
-
-    const data = await response.json()
-    const text = data.content?.[0]?.text
+    const llm = this.container.resolve<LlmClient>('llmClient')
+    const text = await llm.complete(systemPrompt, userPrompt, { temperature: 0, maxTokens: 300 })
     if (!text) return null
 
-    const jsonText = extractJsonObject(text)
-    if (!jsonText) {
-      console.error('[IntentDetector] No JSON object in LLM response:', text)
+    try {
+      const parsed = JSON.parse(text)
+      if (!parsed || typeof parsed !== 'object') return null
+      const intent = parsed.intent as string
+      const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0
+      const keywords = Array.isArray(parsed.keywords) ? parsed.keywords.filter((k: unknown) => typeof k === 'string') : []
+      if (!intent) return null
+      return { intent: intent as CopilotIntent, confidence, keywords }
+    } catch {
       return null
     }
-
-    try {
-      const parsed = JSON.parse(jsonText)
-      if (parsed.intent && typeof parsed.confidence === 'number') {
-        return {
-          intent: parsed.intent as CopilotIntent,
-          confidence: parsed.confidence,
-          keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
-        }
-      }
-    } catch {
-      console.error('[IntentDetector] Failed to parse LLM response:', text)
-    }
-    return null
   }
-}
-
-/**
- * Extract a JSON object from a model response. Handles three shapes:
- *   1. Plain JSON: `{...}`
- *   2. Markdown-fenced JSON: ` ```json\n{...}\n``` ` or ` ```\n{...}\n``` `
- *   3. Prose-wrapped JSON: anywhere in a longer reply
- *
- * Returns the JSON substring (still needing JSON.parse) or null if none found.
- */
-function extractJsonObject(text: string): string | null {
-  const trimmed = text.trim()
-
-  // Markdown fence stripping (```json ... ``` or ``` ... ```)
-  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i)
-  if (fenceMatch) return fenceMatch[1].trim()
-
-  // Already a bare JSON object
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed
-
-  // Fallback: first `{...}` substring (greedy to last `}`)
-  const start = trimmed.indexOf('{')
-  const end = trimmed.lastIndexOf('}')
-  if (start !== -1 && end > start) return trimmed.slice(start, end + 1)
-
-  return null
 }
