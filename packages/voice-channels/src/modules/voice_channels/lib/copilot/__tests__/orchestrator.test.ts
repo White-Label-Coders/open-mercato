@@ -177,6 +177,71 @@ describe('CopilotOrchestrator', () => {
     })
   })
 
+  it('includes extractionMethod in quote prefill', async () => {
+    const session = {
+      callId: 'call-method',
+      customerId: '11111111-1111-4111-8111-111111111111',
+      repUserId: null,
+      tenantId: 'tenant-1',
+      organizationId: 'org-1',
+      contextWindow: [
+        {
+          segmentId: 30,
+          speaker: 'customer',
+          text: 'Proszę przygotować 10 sztuki Widget Alpha.',
+          confidence: 0.99,
+          isFinal: true,
+          startTime: 0,
+          endTime: 5,
+        },
+      ],
+      recentSuggestionTypes: new Map([['order_intent', Date.now()]]),
+      suggestionCounter: 0,
+      lastProductId: null,
+      companyProfileId: null,
+      companyEntityId: '22222222-2222-4222-8222-222222222222',
+      companyContext: null,
+    }
+
+    jest.spyOn(orchestrator as any, 'resolvePreferredChannelId').mockResolvedValue('channel-1')
+    jest.spyOn(orchestrator as any, 'callMcpTool').mockImplementation(async (toolName: string) => {
+      if (toolName !== 'copilot_search_products') return null
+      return {
+        products: [
+          {
+            id: 'product-alpha',
+            name: 'Widget Alpha',
+            sku: 'ALPHA-01',
+            price: { amount: 10, currency: 'PLN', priceType: 'standard' },
+            available: true,
+            stockQuantity: 1000,
+            category: 'Widgets',
+          },
+        ],
+      }
+    })
+
+    const result = await (orchestrator as any).buildQuickAction(
+      session,
+      'Klient chce złożyć zamówienie',
+      30,
+      0.98,
+      ['widget', 'alpha'],
+    )
+
+    expect(result).toMatchObject({
+      type: 'quick_action',
+      actions: expect.arrayContaining([
+        expect.objectContaining({
+          actionType: 'create_quote',
+          prefill: expect.objectContaining({
+            extractionMethod: expect.stringMatching(/^(llm|heuristic|heuristic_fallback)$/),
+          }),
+        }),
+      ]),
+    })
+  })
+
   it('uses neighboring rep confirmation when product and quantity are split across segments', async () => {
     const session = {
       callId: 'call-context',
@@ -250,6 +315,27 @@ describe('CopilotOrchestrator', () => {
           }),
         }),
       ]),
+    })
+  })
+
+  describe('extractFirstJsonObject', () => {
+    it('extracts balanced JSON from text with trailing prose', () => {
+      const result = (orchestrator as any).extractFirstJsonObject(
+        '{"lines":[{"productId":"aaa","quantity":500}]}\nActually this is wrong',
+      )
+      expect(JSON.parse(result)).toEqual({ lines: [{ productId: 'aaa', quantity: 500 }] })
+    })
+
+    it('extracts JSON when wrapped in markdown code fence', () => {
+      const result = (orchestrator as any).extractFirstJsonObject(
+        '```json\n{"lines":[{"productId":"bbb","quantity":200}]}\n```',
+      )
+      expect(JSON.parse(result)).toEqual({ lines: [{ productId: 'bbb', quantity: 200 }] })
+    })
+
+    it('returns null for non-JSON text', () => {
+      const result = (orchestrator as any).extractFirstJsonObject('No JSON here')
+      expect(result).toBeNull()
     })
   })
 })
