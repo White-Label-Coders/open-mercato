@@ -13,6 +13,11 @@ import {
   CustomerDealPersonLink,
   CustomerEntity,
 } from '@open-mercato/core/modules/customers/data/entities'
+import {
+  expandStemVariants,
+  PL_STOPWORDS,
+  tokenizeAndFilterCustomerText,
+} from './lib/text/polishText'
 import { SalesOrder } from '@open-mercato/core/modules/sales/data/entities'
 import type {
   CopilotCustomerContextResult,
@@ -25,6 +30,7 @@ type ProductSearchInput = {
   keywords: string[]
   customerId?: string
   limit?: number
+  context?: string
 }
 
 type CustomerContextInput = {
@@ -241,14 +247,17 @@ Returns matching products with scoped pricing, category, and stock metadata for 
   inputSchema: z.object({
     keywords: z.array(z.string().min(1)).min(1).describe('Product-related keywords from the conversation'),
     customerId: z.string().uuid().optional().describe('Customer entity ID used for customer-specific pricing'),
-    limit: z.number().int().min(1).max(10).optional().default(3).describe('Maximum number of products to return'),
+    limit: z.number().int().min(1).max(50).optional().default(3).describe('Maximum number of products to return'),
+    context: z.string().optional().describe('Raw transcript text for relevance-based ranking'),
   }),
   requiredFeatures: ['voice_channels.copilot.view'],
   handler: async (input, ctx) => {
     const { em, organizationId, tenantId } = requireScope(ctx)
     const pattern = buildKeywordPattern(input.keywords)
 
-    const products = await em.find(
+    const fetchLimit = input.context ? Math.max(input.limit ?? 3, 50) : (input.limit ?? 3)
+
+    let products = await em.find(
       CatalogProduct,
       {
         organizationId,
@@ -263,9 +272,31 @@ Returns matching products with scoped pricing, category, and stock metadata for 
       },
       {
         orderBy: { title: 'ASC' },
-        limit: input.limit ?? 3,
+        limit: fetchLimit,
       }
     )
+
+    if (input.context && products.length > 1) {
+      const contextTokens = new Set(
+        tokenizeAndFilterCustomerText(input.context, { stopwords: PL_STOPWORDS, limit: 60 }),
+      )
+
+      const scored = products.map((product) => {
+        const haystack = `${product.title} ${product.sku ?? ''}`.toLocaleLowerCase('pl-PL')
+        let score = 0
+        for (const token of contextTokens) {
+          if (haystack.includes(token.toLocaleLowerCase('pl-PL'))) score += 1
+        }
+        return { product, score }
+      })
+
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        return a.product.title.localeCompare(b.product.title, 'pl')
+      })
+
+      products = scored.slice(0, input.limit ?? 3).map((entry) => entry.product)
+    }
 
     const productIds = products.map((product) => product.id)
     const priceRows = productIds.length
