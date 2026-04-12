@@ -35,6 +35,7 @@ import {
   inferQuantityFromText,
   summarizeTranscriptSegments,
 } from './quickActionDrafts'
+import { expandStemVariants, PL_STOPWORDS, stripDiacritics } from '../text/polishText'
 
 const toolHandlers: Record<string, (input: any, ctx: any) => Promise<unknown>> =
   Object.fromEntries(aiTools.map((tool) => [tool.name, tool.handler as any]))
@@ -496,17 +497,25 @@ Return only the updated memory document.`
       .filter((segment) => segment.speaker === 'rep')
       .flatMap((segment) => extractSearchKeywordsFromText(segment.text, 12))
 
-    return Array.from(
-      new Set(
-        [
-          ...keywords,
-          ...customerTokens,
-          ...repTokens,
-        ]
-          .map((keyword) => keyword.trim())
-          .filter((keyword) => keyword.length > 0),
-      ),
-    ).slice(0, limit)
+    const rawTokens = [
+      ...keywords,
+      ...customerTokens,
+      ...repTokens,
+    ]
+      .map((keyword) => keyword.trim())
+      .filter((keyword) => {
+        if (keyword.length < 3) return false
+        const lowered = keyword.toLocaleLowerCase('pl-PL')
+        return !PL_STOPWORDS.has(lowered)
+      })
+
+    const withStems = rawTokens.flatMap((token) => {
+      const variants = expandStemVariants(token)
+      const stripped = variants.map((v) => stripDiacritics(v))
+      return [...variants, ...stripped]
+    })
+
+    return Array.from(new Set(withStems)).slice(0, limit)
   }
 
   private collectProductAliases(product: CopilotProductSearchResult['products'][number]): string[] {
@@ -697,6 +706,8 @@ Return the JSON object now.`
       .join(' ')
     const aggregateKeywords = this.buildProductSearchKeywords(conversationSegments, keywords, 60)
 
+    console.log('[DEBUG:quote] aggregateKeywords', aggregateKeywords.slice(0, 30))
+
     const candidates = aggregateKeywords.length > 0
       ? await this.callMcpTool<CopilotProductSearchResult>(
           'copilot_search_products',
@@ -712,6 +723,8 @@ Return the JSON object now.`
 
     const llmCandidates = candidates?.products ?? []
 
+    console.log('[DEBUG:quote] search returned', llmCandidates.length, 'products:', llmCandidates.map((p) => p.name))
+
     const llmLines = await this.extractQuoteLinesViaLlm(
       session,
       llmCandidates,
@@ -719,6 +732,9 @@ Return the JSON object now.`
       confidence,
       triggerText,
     )
+
+    console.log('[DEBUG:quote] llmLines result:', llmLines?.length ?? 'null', llmLines?.map((l) => ({ pid: l.productId, qty: l.quantity })))
+
     if (llmLines && llmLines.length > 0) {
       session.lastProductId = llmLines[0]?.productId ?? session.lastProductId
       return { lines: llmLines, extractionMethod: 'llm' as const }
@@ -727,8 +743,11 @@ Return the JSON object now.`
     const linesByProductId = new Map<string, VoiceCreateQuotePrefill['lines'][number]>()
     const candidateProductsBySegment = new Map<number, CopilotProductSearchResult['products']>()
 
+    console.log('[DEBUG:quote] entering heuristic path, segments:', conversationSegments.length)
+
     for (const segment of conversationSegments) {
       const segmentKeywords = extractSearchKeywordsFromText(segment.text, 8)
+      console.log('[DEBUG:quote] segment', segment.segmentId, segment.speaker, ':', segment.text.slice(0, 100), '→ keywords:', segmentKeywords)
       const segmentProducts = segmentKeywords.length > 0
         ? await this.callMcpTool<CopilotProductSearchResult>(
             'copilot_search_products',
@@ -741,6 +760,8 @@ Return the JSON object now.`
           )
         : null
 
+      console.log('[DEBUG:quote] segment', segment.segmentId, 'search returned:', segmentProducts?.products?.map((p) => p.name) ?? 'null')
+
       const candidateProducts = Array.from(
         new Map(
           [...(segmentProducts?.products ?? []), ...(candidates?.products ?? [])]
@@ -751,9 +772,10 @@ Return the JSON object now.`
 
       for (const product of candidateProducts) {
         const score = this.scoreProductAgainstSegment(segment, product)
+        const aliases = this.collectProductAliases(product)
+        const quantity = score >= 2 ? extractQuantityNearAliases(segment.text, aliases) : null
+        console.log('[DEBUG:quote] product', product.name, 'score:', score, 'aliases:', aliases, 'quantity:', quantity)
         if (score < 2) continue
-
-        const quantity = extractQuantityNearAliases(segment.text, this.collectProductAliases(product))
         if (quantity == null) continue
 
         linesByProductId.set(product.id, {
@@ -764,6 +786,8 @@ Return the JSON object now.`
         })
       }
     }
+
+    console.log('[DEBUG:quote] heuristic linesByProductId:', Array.from(linesByProductId.entries()).map(([id, l]) => ({ id, qty: l.quantity })))
 
     for (let index = 0; index < conversationSegments.length; index += 1) {
       const segment = conversationSegments[index]

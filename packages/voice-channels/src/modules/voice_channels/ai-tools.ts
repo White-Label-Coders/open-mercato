@@ -255,7 +255,7 @@ Returns matching products with scoped pricing, category, and stock metadata for 
     const { em, organizationId, tenantId } = requireScope(ctx)
     const pattern = buildKeywordPattern(input.keywords)
 
-    const fetchLimit = input.context ? Math.max(input.limit ?? 3, 50) : (input.limit ?? 3)
+    const fetchLimit = input.context ? Math.max(input.limit ?? 3, 200) : (input.limit ?? 3)
 
     let products = await em.find(
       CatalogProduct,
