@@ -220,6 +220,7 @@ export function CopilotWorkspace() {
           ) : null}
           <SuggestionStack
             suggestions={suggestions}
+            segments={segments}
             onDismiss={handleDismiss}
           />
         </div>

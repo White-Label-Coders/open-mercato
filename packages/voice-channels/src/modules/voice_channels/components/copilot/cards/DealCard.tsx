@@ -1,8 +1,8 @@
 'use client'
 
 import { useT } from '@open-mercato/shared/lib/i18n/context'
-import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { DealStatusCard } from '../../../types'
+import { CopilotCardFrame } from './CopilotCardFrame'
 
 interface Props {
   card: DealStatusCard
@@ -12,76 +12,36 @@ interface Props {
 export function DealCard({ card, onDismiss }: Props) {
   const t = useT()
   return (
-    <div
-      style={{
-        backgroundColor: '#fff',
-        borderRadius: '10px',
-        border: '1px solid #e2e8f0',
-        borderLeft: '4px solid #06b6d4',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-      }}
+    <CopilotCardFrame
+      tone="cyan"
+      title={t('voice_channels.copilot.cards.dealStatus.title', 'Open deals')}
+      icon="📊"
+      onDismiss={onDismiss}
+      dismissLabel={t('voice_channels.copilot.cards.dismiss.dealStatus', 'Dismiss deal status')}
     >
-      <div
-        style={{
-          padding: '12px 16px',
-          backgroundColor: '#ecfeff',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
-      >
-        <span style={{ fontSize: '13px', fontWeight: 700, color: '#155e75' }}>
-          📊 {t('voice_channels.copilot.cards.dealStatus.title', 'Open deals')}
-        </span>
-        <IconButton
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onDismiss}
-          aria-label={t('voice_channels.copilot.cards.dismiss.dealStatus', 'Dismiss deal status')}
-        >
-          ✕
-        </IconButton>
-      </div>
-      <div style={{ padding: '0 16px 12px' }}>
+      <div className="space-y-3">
         {card.deals.map((deal) => (
           <div
             key={deal.id}
-            style={{
-              padding: '10px 0',
-              borderBottom: '1px solid #f1f5f9',
-            }}
+            className="rounded-lg border border-slate-800 bg-slate-900/80 p-3 shadow-xs"
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ fontWeight: 600, fontSize: '13px', color: '#1e293b' }}>{deal.title}</span>
-              <span style={{ fontWeight: 700, fontSize: '14px', color: '#059669' }}>
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-sm font-semibold text-slate-100">{deal.title}</span>
+              <span className="text-sm font-semibold text-emerald-300">
                 {deal.value.toLocaleString()} {deal.currency}
               </span>
             </div>
-            <div style={{ display: 'flex', gap: '12px', marginTop: '4px', fontSize: '12px' }}>
-              <span
-                style={{
-                  padding: '2px 8px',
-                  backgroundColor: '#f0f9ff',
-                  borderRadius: '4px',
-                  color: '#0369a1',
-                }}
-              >
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-full border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 font-medium text-cyan-200">
                 {deal.stage}
               </span>
-              <span style={{ color: '#64748b' }}>
+              <span className="text-slate-400">
                 {t('voice_channels.copilot.cards.dealStatus.daysInStage', '{days} days in stage', {
                   days: deal.daysInStage,
                 })}
               </span>
               {deal.isStalled && (
-                <span
-                  style={{
-                    color: '#dc2626',
-                    fontWeight: 600,
-                    animation: 'pulse 2s infinite',
-                  }}
-                >
+                <span className="animate-pulse font-semibold text-rose-300">
                   ⚠ {t('voice_channels.copilot.cards.dealStatus.stalled', 'Stalled')}
                 </span>
               )}
@@ -89,6 +49,6 @@ export function DealCard({ card, onDismiss }: Props) {
           </div>
         ))}
       </div>
-    </div>
+    </CopilotCardFrame>
   )
 }

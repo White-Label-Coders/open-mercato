@@ -121,6 +121,7 @@ export default function CustomerCompanyDetailPage({ params }: { params?: { id?: 
     data?.company?.displayName && data.company.displayName.trim().length
       ? data.company.displayName
       : t('customers.companies.list.deleteFallbackName', 'this company')
+  const useCanonicalInteractions = data?.interactionMode === 'canonical'
   const translateCompanyDetail = React.useCallback(
     (key: string, fallback?: string, params?: Record<string, string | number>) => {
       const mappedKey = key.startsWith('customers.people.detail.')
@@ -893,6 +894,7 @@ export default function CustomerCompanyDetailPage({ params }: { params?: { id?: 
                   <TasksSection
                     entityId={companyId}
                     initialTasks={data.todos}
+                    useCanonicalInteractions={useCanonicalInteractions}
                     runGuardedMutation={runMutationWithContext}
                     emptyLabel={t('customers.companies.detail.empty.todos', 'No tasks linked to this company.')}
                     addActionLabel={t('customers.companies.detail.tasks.add', 'Add task')}

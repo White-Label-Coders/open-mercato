@@ -1,8 +1,8 @@
 'use client'
 
 import { useT } from '@open-mercato/shared/lib/i18n/context'
-import { IconButton } from '@open-mercato/ui/primitives/icon-button'
 import type { CustomerContextCard } from '../../../types'
+import { CopilotCardFrame } from './CopilotCardFrame'
 
 interface Props {
   card: CustomerContextCard
@@ -11,9 +11,9 @@ interface Props {
 
 function StatBox({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ padding: '6px 8px', backgroundColor: '#f8fafc', borderRadius: '6px' }}>
-      <div style={{ fontSize: '10px', color: '#94a3b8', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: '14px', fontWeight: 600, color: '#1e293b' }}>{value}</div>
+    <div className="rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-sm font-semibold text-slate-100">{value}</div>
     </div>
   )
 }
@@ -23,42 +23,20 @@ export function ContextCard({ card, onDismiss }: Props) {
   const c = card.customer
 
   return (
-    <div
-      style={{
-        backgroundColor: '#fff',
-        borderRadius: '10px',
-        border: '1px solid #e2e8f0',
-        borderLeft: '4px solid #8b5cf6',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-      }}
+    <CopilotCardFrame
+      tone="violet"
+      title={t('voice_channels.copilot.cards.customerContext.title', 'Customer context')}
+      icon="👤"
+      onDismiss={onDismiss}
+      dismissLabel={t('voice_channels.copilot.cards.dismiss.customerContext', 'Dismiss customer context')}
     >
-      <div
-        style={{
-          padding: '12px 16px',
-          backgroundColor: '#f5f3ff',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
-      >
-        <span style={{ fontSize: '13px', fontWeight: 700, color: '#5b21b6' }}>
-          👤 {t('voice_channels.copilot.cards.customerContext.title', 'Customer context')}
-        </span>
-        <IconButton
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onDismiss}
-          aria-label={t('voice_channels.copilot.cards.dismiss.customerContext', 'Dismiss customer context')}
-        >
-          ✕
-        </IconButton>
-      </div>
-      <div style={{ padding: '12px 16px' }}>
-        <div style={{ fontSize: '16px', fontWeight: 700, color: '#1e293b' }}>{c.name}</div>
-        <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '12px' }}>{c.company}</div>
+      <div className="space-y-4">
+        <div>
+          <div className="text-base font-semibold text-slate-100">{c.name}</div>
+          <div className="text-sm text-slate-400">{c.company}</div>
+        </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+        <div className="grid grid-cols-2 gap-2">
           <StatBox label={t('voice_channels.copilot.cards.customerContext.ltv', 'Customer value (LTV)')} value={`${c.lifetimeValue.toLocaleString()} ${c.currency}`} />
           <StatBox label={t('voice_channels.copilot.cards.customerContext.lastOrder', 'Last order')} value={c.lastOrderDate} />
           <StatBox label={t('voice_channels.copilot.cards.customerContext.orderCount', 'Order count')} value={String(c.orderCount)} />
@@ -66,22 +44,13 @@ export function ContextCard({ card, onDismiss }: Props) {
         </div>
 
         {c.topCategories.length > 0 && (
-          <div style={{ marginTop: '8px' }}>
-            <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
+          <div>
+            <div className="mb-2 text-[11px] text-slate-400">
               {t('voice_channels.copilot.cards.customerContext.topCategories', 'Top categories:')}
             </div>
-            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+            <div className="flex flex-wrap gap-2">
               {c.topCategories.map((cat, i) => (
-                <span
-                  key={i}
-                  style={{
-                    padding: '2px 8px',
-                    backgroundColor: '#f1f5f9',
-                    borderRadius: '12px',
-                    fontSize: '11px',
-                    color: '#475569',
-                  }}
-                >
+                <span key={i} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] text-slate-200">
                   {cat}
                 </span>
               ))}
@@ -90,55 +59,22 @@ export function ContextCard({ card, onDismiss }: Props) {
         )}
 
         {c.notes && (
-          <div
-            style={{
-              marginTop: '8px',
-              padding: '8px',
-              backgroundColor: '#fffbeb',
-              borderRadius: '6px',
-              fontSize: '12px',
-              color: '#92400e',
-            }}
-          >
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
             📝 {c.notes}
           </div>
         )}
 
         {card.priorContext && (
-          <div
-            style={{
-              marginTop: '8px',
-              padding: '8px 10px',
-              backgroundColor: '#eef2ff',
-              borderRadius: '6px',
-              borderLeft: '3px solid #6366f1',
-            }}
-          >
-            <div
-              style={{
-                fontSize: '10px',
-                fontWeight: 700,
-                color: '#4338ca',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-                marginBottom: '4px',
-              }}
-            >
+          <div className="rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-3">
+            <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-violet-300">
               🧠 Pamięć Copilota
             </div>
-            <div
-              style={{
-                fontSize: '12px',
-                color: '#312e81',
-                lineHeight: 1.5,
-                whiteSpace: 'pre-wrap',
-              }}
-            >
+            <div className="whitespace-pre-wrap text-xs leading-5 text-violet-100">
               {card.priorContext}
             </div>
           </div>
         )}
       </div>
-    </div>
+    </CopilotCardFrame>
   )
 }
